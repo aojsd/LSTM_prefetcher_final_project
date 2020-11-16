@@ -1,4 +1,5 @@
 import sys
+import argparse
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -20,7 +21,7 @@ def setup_data(pc, delta, types, target, batch_size=2):
     return data_iter
 
 def train_net(net, train_iter, epochs, optimizer, device='cpu', scheduler=None,
-                print_interval=5):
+                print_interval=10):
     loss_list = []
     net = net.to(device)
     for e in range(epochs):
@@ -44,7 +45,7 @@ def train_net(net, train_iter, epochs, optimizer, device='cpu', scheduler=None,
             scheduler.step()
         
         if (e+1) % print_interval == 0:
-            print(f"Epoch {e+1}\tLoss:\t{loss_list[-1]}")
+            print(f"Epoch {e+1}\tLoss:\t{loss_list[-1]:.8f}")
     return loss_list
 
 def eval_net(net, eval_iter, device='cpu', line_size=64):
@@ -67,31 +68,28 @@ def eval_net(net, eval_iter, device='cpu', line_size=64):
     print('Prediction Acc.: {:.4f}'.format(torch.tensor(acc_list).mean()))
         
 
-def main(argv):
-    if len(argv) != 2:
-        print("Invalid Arguments, need:")
-        print("\t1) Input data file")
-        return
+def main(args):
+    datafile = args.datafile
     
     # Load training examples
-    train_size = 100
-    pc, delta, types, target = load_data(argv[1], train_size)
+    train_size = args.train_size
+    pc, delta, types, target = load_data(datafile, train_size)
     num_bits = 64
 
     # Training data setup
-    batch_size = 10
+    batch_size = args.batch_size
     train_iter = setup_data(pc, delta, types, target, batch_size=batch_size)
     eval_iter = setup_data(pc, delta, types, target, batch_size=train_size)
 
     # Tunable hyperparameters
-    embed_dim = 128
+    embed_dim = 64
     type_embed_dim = 4
-    hidden_dim = 128
+    hidden_dim = 64
     num_layers = 1
     dropout = 0
-    linear_end=True
+    linear_end = args.lin
     lr = 2e-3
-    epochs = 200
+    epochs = args.epochs
 
     # Prefetching Model
     prefetch_net = PrefetchBinary(num_bits, embed_dim, type_embed_dim, hidden_dim,
@@ -111,4 +109,11 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    main(sys.argv)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("datafile", help="Input data set to train/test on", type=str)
+    parser.add_argument("--train_size", help="Size of training set", default=1000)
+    parser.add_argument("--batch_size", help="Batch size for training", default=50)
+    parser.add_argument("--epochs", help="Number of epochs to train", default=1)
+    parser.add_argument("--lin", help="Use a linear layer at the end or not", action="store_true", default=True)
+    args = parser.parse_args()
+    main(args)

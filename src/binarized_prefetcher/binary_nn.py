@@ -23,7 +23,7 @@ class PrefetchBinary(nn.Module):
 
         # Automatically sigmoids and calculates cross entropy loss with given weights
         # weights = torch.ones(2*num_bits+1)
-        self.loss_func = nn.BCEWithLogitsLoss(reduction='sum')
+        self.loss_func = nn.BCEWithLogitsLoss(reduction='mean')
 
     def forward(self, X, lstm_state, target):
         # X is the tuple (pc's, deltas, types) where:
