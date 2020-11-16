@@ -68,10 +68,9 @@ def eval_net(net, eval_iter, device='cpu', line_size=64):
     print('Prediction Acc.: {:.4f}'.format(torch.tensor(acc_list).mean()))
         
 
-def main(args):
-    datafile = args.datafile
-    
+def main(args):    
     # Load training examples
+    datafile = args.datafile
     train_size = args.train_size
     pc, delta, types, target = load_data(datafile, train_size)
     num_bits = 64
@@ -81,6 +80,11 @@ def main(args):
     train_iter = setup_data(pc, delta, types, target, batch_size=batch_size)
     eval_iter = setup_data(pc, delta, types, target, batch_size=train_size)
 
+    # Check for cuda usage
+    if args.cuda:
+        device = torch.device('cuda:0')
+    else: device = 'cpu'
+
     # Tunable hyperparameters
     embed_dim = 64
     type_embed_dim = 4
@@ -89,7 +93,7 @@ def main(args):
     dropout = 0
     linear_end = args.lin
     lr = 2e-3
-    epochs = args.epochs
+    
 
     # Prefetching Model
     prefetch_net = PrefetchBinary(num_bits, embed_dim, type_embed_dim, hidden_dim,
@@ -102,7 +106,10 @@ def main(args):
     #         print(name + "\t" + str(param.shape))
 
     # Train
-    loss_list = train_net(prefetch_net, train_iter, epochs, optimizer)
+    epochs = args.epochs
+    print_interval = args.print_interval
+    loss_list = train_net(prefetch_net, train_iter, epochs, optimizer, device=device,
+                            print_interval=print_interval)
 
     # Eval
     eval_net(prefetch_net, eval_iter)
@@ -114,6 +121,9 @@ if __name__ == "__main__":
     parser.add_argument("--train_size", help="Size of training set", default=1000)
     parser.add_argument("--batch_size", help="Batch size for training", default=50)
     parser.add_argument("--epochs", help="Number of epochs to train", default=1)
+    parser.add_argument("--print_interval", help="Print loss during training", default=10)
     parser.add_argument("--lin", help="Use a linear layer at the end or not", action="store_true", default=True)
+    parser.add_argument("--cuda", help="Use cuda or not", action="store_true", default=True)
+    parser.add_argument("--cuda_parallel", help="Use multiple GPUs for computation", action="store_true", default=False)
     args = parser.parse_args()
     main(args)
