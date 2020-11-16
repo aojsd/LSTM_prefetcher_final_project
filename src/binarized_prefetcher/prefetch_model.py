@@ -100,6 +100,10 @@ def main(args):
                         num_layers, dropout, linear_end=linear_end)
     optimizer = torch.optim.Adam(prefetch_net.parameters(), lr=lr)
 
+    # Check for using multiple GPUs
+    if args.cuda_parallel:
+        prefetch_net = nn.DataParallel(prefetch_net, range(torch.cuda.device_count()))
+
     # Print parameters for debugging purposes
     # for name, param in prefetch_net.named_parameters():
     #     if param.requires_grad:
