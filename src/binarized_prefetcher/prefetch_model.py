@@ -99,10 +99,6 @@ def main(args):
                         num_layers, dropout, linear_end=linear_end)
     optimizer = torch.optim.Adam(prefetch_net.parameters(), lr=lr)
 
-    # Check for using multiple GPUs
-    if args.cuda_parallel:
-        prefetch_net = nn.DataParallel(prefetch_net, range(args.cuda_parallel))
-
     # Print parameters for debugging purposes
     # for name, param in prefetch_net.named_parameters():
     #     if param.requires_grad:
@@ -128,6 +124,5 @@ if __name__ == "__main__":
     parser.add_argument("--print_interval", help="Print loss during training", default=1)
     parser.add_argument("--lin", help="Use a linear layer at the end or not", action="store_true", default=True)
     parser.add_argument("--cuda", help="Use cuda or not", action="store_true", default=True)
-    parser.add_argument("--cuda_parallel", help="Use multiple GPUs for computation", default=1)
     args = parser.parse_args()
     main(args)
