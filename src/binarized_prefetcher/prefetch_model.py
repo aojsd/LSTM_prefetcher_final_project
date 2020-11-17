@@ -21,7 +21,7 @@ def setup_data(pc, delta, types, target, batch_size=2):
     return data_iter
 
 def train_net(net, train_iter, epochs, optimizer, device='cpu', scheduler=None,
-                print_interval=10):
+                print_interval=1):
     loss_list = []
     net = net.to(device)
     for e in range(epochs):
@@ -61,7 +61,7 @@ def eval_net(net, eval_iter, device='cpu', line_size=64):
         X = eval_data[:-1]
         target = eval_data[-1]
 
-        preds = net.predict(X)
+        preds = net.module.predict(X)
         pred_acc = comp_acc(preds, target, line_size=line_size)
         acc_list.append(pred_acc)
     
@@ -101,7 +101,7 @@ def main(args):
 
     # Check for using multiple GPUs
     if args.cuda_parallel:
-        prefetch_net = nn.DataParallel(prefetch_net, range(torch.cuda.device_count()))
+        prefetch_net = nn.DataParallel(prefetch_net, range(args.cuda_parallel))
 
     # Print parameters for debugging purposes
     # for name, param in prefetch_net.named_parameters():
@@ -125,9 +125,9 @@ if __name__ == "__main__":
     parser.add_argument("--train_size", help="Size of training set", default=1000, type=int)
     parser.add_argument("--batch_size", help="Batch size for training", default=50, type=int)
     parser.add_argument("--epochs", help="Number of epochs to train", default=1)
-    parser.add_argument("--print_interval", help="Print loss during training", default=10)
+    parser.add_argument("--print_interval", help="Print loss during training", default=1)
     parser.add_argument("--lin", help="Use a linear layer at the end or not", action="store_true", default=True)
     parser.add_argument("--cuda", help="Use cuda or not", action="store_true", default=True)
-    parser.add_argument("--cuda_parallel", help="Use multiple GPUs for computation", action="store_true", default=False)
+    parser.add_argument("--cuda_parallel", help="Use multiple GPUs for computation", default=1)
     args = parser.parse_args()
     main(args)

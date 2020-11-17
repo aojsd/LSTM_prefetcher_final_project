@@ -19,7 +19,7 @@ def un_binarize(X, num_bits, signed=False):
     # If signed=False, X has shape (..., num_bits)
     # Otherwise, X should have shape (..., 2*num_bits + 1)
     #       +1 is for a sign indicator
-    mask = 2**torch.arange(num_bits - 1, -1, -1)
+    mask = 2**torch.arange(num_bits - 1, -1, -1, device=X.device)
     X = torch.ge(X, 0).byte()
     n_dims = len(X.shape)
     if signed:
