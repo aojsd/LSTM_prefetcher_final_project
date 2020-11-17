@@ -31,7 +31,7 @@ class PrefetchBinary(nn.Module):
         # target is a tensor of the target deltas, has shape (T,)
         #       target deltas are not binarized
         # Returns loss, lstm output, and lstm state
-        pc, delta, types = X
+        pc, delta, types = X     
         pc = self.pc_embed(bits.binarize(pc, self.num_bits, signed=False))
         delta = self.delta_embed(bits.binarize(delta, self.num_bits, signed=True))
         types = self.type_embed(types)

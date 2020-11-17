@@ -5,7 +5,7 @@ import torch.nn as nn
 
 def binarize(X, num_bits, signed=False):
     # X can be of any size, must have a integer dtype
-    mask = 2**torch.arange(num_bits - 1, -1, -1)
+    mask = 2**torch.arange(num_bits - 1, -1, -1, device=X.device)
     if signed:
         signs = torch.ge(X, 0).byte().unsqueeze(-1)
         X = torch.abs(X)

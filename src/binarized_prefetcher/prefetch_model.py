@@ -94,7 +94,6 @@ def main(args):
     linear_end = args.lin
     lr = 2e-3
     
-
     # Prefetching Model
     prefetch_net = PrefetchBinary(num_bits, embed_dim, type_embed_dim, hidden_dim,
                         num_layers, dropout, linear_end=linear_end)
@@ -112,18 +111,19 @@ def main(args):
     # Train
     epochs = args.epochs
     print_interval = args.print_interval
+    print("Train Start:")
     loss_list = train_net(prefetch_net, train_iter, epochs, optimizer, device=device,
                             print_interval=print_interval)
 
     # Eval
-    eval_net(prefetch_net, eval_iter)
+    eval_net(prefetch_net, eval_iter, device=device)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("datafile", help="Input data set to train/test on", type=str)
-    parser.add_argument("--train_size", help="Size of training set", default=1000)
-    parser.add_argument("--batch_size", help="Batch size for training", default=50)
+    parser.add_argument("--train_size", help="Size of training set", default=1000, type=int)
+    parser.add_argument("--batch_size", help="Batch size for training", default=50, type=int)
     parser.add_argument("--epochs", help="Number of epochs to train", default=1)
     parser.add_argument("--print_interval", help="Print loss during training", default=10)
     parser.add_argument("--lin", help="Use a linear layer at the end or not", action="store_true", default=True)
