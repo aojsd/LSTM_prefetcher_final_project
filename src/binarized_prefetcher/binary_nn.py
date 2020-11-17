@@ -8,8 +8,8 @@ class PrefetchBinary(nn.Module):
                  dropout=0, linear_end=False):
         super(PrefetchBinary, self).__init__()
         self.num_bits = num_bits
-        self.pc_embed = nn.EmbeddingBag(num_bits, embed_dim)
-        self.delta_embed = nn.EmbeddingBag(2*num_bits, embed_dim)
+        self.pc_embed = nn.EmbeddingBag(num_bits, embed_dim, mode="max")
+        self.delta_embed = nn.EmbeddingBag(2*num_bits, embed_dim, mode="max")
         self.type_embed = nn.Embedding(3, type_embed_dim)
 
         self.linear_end = linear_end
@@ -22,8 +22,10 @@ class PrefetchBinary(nn.Module):
                                 batch_first=True, dropout=dropout)
 
         # Automatically sigmoids and calculates cross entropy loss with given weights
+        weights = torch.arange(num_bits-1, -1, -1)**2
+        weights = torch.cat([weights, weights, torch.tensor([num_bits**2])])
         # weights = torch.ones(2*num_bits+1)
-        self.loss_func = nn.BCEWithLogitsLoss(reduction='mean')
+        self.loss_func = nn.BCEWithLogitsLoss(weight=weights, reduction='mean')
 
     def forward(self, X, lstm_state, target):
         # X is the tuple (pc's, deltas, types) where:
