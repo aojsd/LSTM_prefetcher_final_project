@@ -53,7 +53,7 @@ class PrefetchBinary(nn.Module):
         loss = self.loss_func(out, target)
         return loss, out, state
 
-    def predict(self, X):
+    def predict(self, X, state):
         pc, delta, types = X
         pc = self.pc_embed(bits.binarize(pc, self.num_bits, signed=False))
         delta = self.delta_embed(bits.binarize(delta, self.num_bits, signed=True))
@@ -65,16 +65,15 @@ class PrefetchBinary(nn.Module):
             lstm_in = torch.cat((pc, delta, types), dim=-1)
 
         if self.linear_end:
-            out, state = self.lstm(lstm_in)
+            out, state = self.lstm(lstm_in, state)
             out = self.out_lin(out)
         else:
-            out, state = self.lstm(lstm_in)
+            out, state = self.lstm(lstm_in, state)
 
         # Calculate predictions
         out = out.squeeze()
-        # print(out)
         preds = bits.un_binarize(out, self.num_bits, signed=True)
-        return preds
+        return preds, state
 
 def main(argv):
     pc = torch.arange(4)
