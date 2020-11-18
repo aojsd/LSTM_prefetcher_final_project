@@ -4,7 +4,9 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from binary_nn import PrefetchBinary
+from bits_module import un_binarize
 
+# Load data from input file
 def load_data(infile, nrows, skip=None):
     if skip == None:
         data = pd.read_csv(infile, nrows=nrows)
@@ -16,6 +18,7 @@ def load_data(infile, nrows, skip=None):
     targets = torch.tensor(data['delta_out'].to_numpy())
     return pc, delta_in, types, targets
 
+# Wrap tensors into a dataloader object
 def setup_data(pc, delta, types, target, batch_size=2):
     dataset = torch.utils.data.TensorDataset(
                     pc, delta, types, target)
@@ -23,6 +26,7 @@ def setup_data(pc, delta, types, target, batch_size=2):
                     dataset, batch_size, shuffle=False)
     return data_iter
 
+# Train the network
 def train_net(net, train_iter, epochs, optimizer, device='cpu', scheduler=None,
                 print_interval=10):
     loss_list = []
@@ -52,32 +56,98 @@ def train_net(net, train_iter, epochs, optimizer, device='cpu', scheduler=None,
             print(f"\tEpoch {e+1}\tLoss:\t{loss_list[-1]:.8f}")
     return loss_list
 
-def eval_net(net, eval_iter, device='cpu', line_size=64, state=None):
-    def comp_acc(preds, target, line_size=64):
-        diff = preds - target
-        correct = torch.lt(diff, line_size) * torch.ge(diff, 0)
+class Accuracy(nn.Module):
+    def __init__(self, num_bits=64, line_size=64, margin=2):
+        super(Accuracy, self).__init__()
+        self.num_bits = num_bits
+        self.line_size = line_size
+        self.margin = margin
+
+        # Used later for generating multiple predictions
+        num_preds = 2**margin
+        section = num_preds >> 1
+        self.T = torch.zeros((2**margin, margin))
+        for b in range(margin):
+            for i in range(0, int(num_preds/section), 2):
+                self.T[i*section:(i+1)*section, b] = 1
+            section >>= 1
+        self.T = self.T.byte()
+        
+        self.mask = 2**torch.arange(num_bits - 1, -1, -1)
+
+    # Fetches lines from multiple sources based on least confident bits
+    def prob_acc(self, preds, target):
+        # First select the correct half based on the sign bit
+        signs = torch.ge(preds[..., -1], 0).byte().unsqueeze(-1)
+        reduced_preds = signs * preds[..., :self.num_bits]
+        reduced_preds += (1-signs) * preds[..., self.num_bits:-1]
+
+        # Identify the least confident bits in the result
+        conf = torch.abs(reduced_preds)
+        c, inds = torch.topk(conf, self.margin, dim=-1, largest=False)
+
+        # Generate bits prediction list
+        bits = torch.ge(reduced_preds, 0).byte()
+        N = bits.shape[0]
+        bit_pred_list = []
+        for tensor in list(self.T):
+            bits.scatter_(-1, inds, tensor.repeat((N,1)))
+            bit_pred_list.append(bits.clone())
+
+        # Exponentiate to produce final delta predictions
+        delta_list = []
+        for bit_pred in bit_pred_list:
+            pos = bit_pred.mul(self.mask).sum(dim=-1).unsqueeze(-1)
+            del_pred = pos.mul(signs) - pos.mul(1-signs)
+            delta_list.append(del_pred)
+        delta_preds = torch.cat(delta_list, dim=-1)
+
+        # Check if the target deltas have been predicted
+        diff = delta_preds - target.unsqueeze(-1)
+        check = torch.le(torch.abs(diff), 2*self.line_size).sum(dim=-1)
+        check = torch.gt(check, 0).byte()
+        acc = torch.sum(check) / N
+        return acc
+
+    def block_acc(self, preds, target):
+        diff = un_binarize(preds, self.num_bits, signed=True) - target
+        correct = torch.le(torch.abs(diff), 4*self.line_size)
         acc = correct.sum() / correct.numel()
         return acc
+
+# Evaluate the network on a labeled dataset
+def eval_net(net, eval_iter, device='cpu', state=None):
+    comp_acc = Accuracy()
     train_acc = state == None
     net.eval()
-    acc_list = []
+    prob_acc_list = []
+    block_acc_list = []
     for i, eval_data in enumerate(eval_iter):
         eval_data = [ds.to(device) for ds in eval_data]
         X = eval_data[:-1]
         target = eval_data[-1]
 
         preds, state = net.predict(X, state)
-        pred_acc = comp_acc(preds, target, line_size=line_size)
-        acc_list.append(pred_acc)
+
+        prob_acc = comp_acc.prob_acc(preds.cpu(), target.cpu())
+        prob_acc_list.append(prob_acc)
+
+        block_acc = comp_acc.block_acc(preds.cpu(), target.cpu())
+        block_acc_list.append(block_acc)
     
     if train_acc:
-        print('Training Acc.: {:.4f}'.format(torch.tensor(acc_list).mean()))
+        print('Training Prob Acc.: {:.4f}'.format(torch.tensor(prob_acc_list).mean()))
+        print('Training Block Acc.: {:.4f}'.format(torch.tensor(block_acc_list).mean()))
     else:
-        print('Val Acc.: {:.4f}'.format(torch.tensor(acc_list).mean()))
+        print('Val Prob Acc.: {:.4f}'.format(torch.tensor(prob_acc_list).mean()))
+        print('Val Acc.: {:.4f}'.format(torch.tensor(block_acc_list).mean()))
     return state
         
 
-def main(args):    
+def main(args):
+    # Reproducibility
+    torch.manual_seed(0)
+
     # Load training examples
     datafile = args.datafile
     train_size = args.train_size
@@ -96,13 +166,13 @@ def main(args):
     else: device = 'cpu'
 
     # Tunable hyperparameters
-    embed_dim = 128
+    embed_dim = 256
     type_embed_dim = 4
-    hidden_dim = 128
-    num_layers = 1
-    dropout = 0
+    hidden_dim = 256
+    num_layers = 2
+    dropout = 0.1
     linear_end = args.lin
-    lr = 5e-4
+    lr = 1e-3
     
     # Prefetching Model
     prefetch_net = PrefetchBinary(num_bits, embed_dim, type_embed_dim, hidden_dim,
@@ -138,9 +208,9 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("datafile", help="Input data set to train/test on", type=str)
-    parser.add_argument("--train_size", help="Size of training set", default=1000, type=int)
-    parser.add_argument("--batch_size", help="Batch size for training", default=200, type=int)
-    parser.add_argument("--val_size", help="Size of training set", default=1000, type=int)
+    parser.add_argument("--train_size", help="Size of training set", default=5000, type=int)
+    parser.add_argument("--batch_size", help="Batch size for training", default=50, type=int)
+    parser.add_argument("--val_size", help="Size of training set", default=1500, type=int)
     parser.add_argument("--epochs", help="Number of epochs to train", default=1, type=int)
     parser.add_argument("--print_interval", help="Print loss during training", default=10, type=int)
     parser.add_argument("--lin", help="Use a linear layer at the end or not", action="store_true", default=True)

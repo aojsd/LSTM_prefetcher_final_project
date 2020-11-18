@@ -22,8 +22,8 @@ class PrefetchBinary(nn.Module):
                                 batch_first=True, dropout=dropout)
 
         # Automatically sigmoids and calculates cross entropy loss with given weights
-        weights = torch.arange(num_bits-1, -1, -1)**2
-        weights = torch.cat([weights, weights, torch.tensor([num_bits**2])])
+        weights = torch.arange(num_bits-1, -1, -1)
+        weights = torch.cat([weights, weights, torch.tensor([num_bits])])
         # weights = torch.ones(2*num_bits+1)
         self.loss_func = nn.BCEWithLogitsLoss(weight=weights, reduction='mean')
 
@@ -73,8 +73,7 @@ class PrefetchBinary(nn.Module):
             out, state = self.lstm(lstm_in, state)
 
         # Calculate predictions
-        out = out.squeeze()
-        preds = bits.un_binarize(out, self.num_bits, signed=True)
+        preds = out.squeeze()
         return preds, state
 
 def main(argv):
