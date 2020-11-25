@@ -1,4 +1,4 @@
 *pycache*
 benchmark_programs
-data
+data/processing
 *.pkl
