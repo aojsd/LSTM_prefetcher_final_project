@@ -180,10 +180,8 @@ def main(args):
     optimizer = torch.optim.Adam(prefetch_net.parameters(), lr=lr)
 
     # Check for existing model
-    if args.load_file != None:
-        prefetch_net.load_state_dict(torch.load(args.load_file))
-    elif args.continue_file != None:
-        prefetch_net.load_state_dict(torch.load(args.continue_file))
+    if args.model_file != None:
+        prefetch_net.load_state_dict(torch.load(args.model_file))
 
     # Train
     epochs = args.epochs
@@ -199,10 +197,8 @@ def main(args):
     state = eval_net(prefetch_net, eval_iter, device=device, state=state)
 
     # Save model parameters
-    if args.save_file != None:
-        torch.save(prefetch_net.cpu().state_dict(), args.save_file)
-    elif args.continue_file != None:
-        torch.save(prefetch_net.cpu().state_dict(), args.continue_file)
+    if args.model_file != None:
+        torch.save(prefetch_net.cpu().state_dict(), args.model_file)
 
 
 if __name__ == "__main__":
@@ -215,9 +211,7 @@ if __name__ == "__main__":
     parser.add_argument("--print_interval", help="Print loss during training", default=10, type=int)
     parser.add_argument("--lin", help="Use a linear layer at the end or not", action="store_true", default=True)
     parser.add_argument("--cuda", help="Use cuda or not", action="store_true", default=True)
-    parser.add_argument("--save_file", help="File to save model parameters in", default=None, type=str)
-    parser.add_argument("--load_file", help="File to load model parameters from", default=None, type=str)
-    parser.add_argument("--continue_file", help="File containing model parameters to continue training", default=None, type=str)
+    parser.add_argument("--model_file", help="File to load/save model parameters to continue training", default=None, type=str)
     parser.add_argument("-e", help="Load and evaluate only", action="store_true", default=False)
 
     args = parser.parse_args()
