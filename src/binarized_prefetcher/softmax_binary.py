@@ -1,11 +1,14 @@
 import sys
+import argparse
+import pandas as pd
 import torch
 import torch.nn as nn
 import bits_module as bits
+import training as T
 
 def bit_split(X, splits, len_split, signed=True):
     # Separate splits in input based on bitwise values
-    # Output will have shape (N, 2*splits)
+    # Output will have shape (N, 2*splits) if signed, else (N, splits)
     #   Lower order bits will have lower index in the splits dimension
     #   Output has a positive and negative section, if original is positive,
     #   the negative section will be all zeroes, and vice versa
@@ -47,6 +50,11 @@ class MultibitSoftmax(nn.Module):
         ce_target = bit_split(target, self.splits, self.len_split)
 
         # Calculate multi-dimensional cross-entropy loss and class predictions
+        # loss = 0
+        # for i in range(self.splits):
+        #     loss += i*self.CE(ce_in[:,:,i], ce_target[:,i])
+        #     loss += i*self.CE(ce_in[:,:,i + self.splits], ce_target[:,i + self.splits])
+
         loss = self.CE(ce_in, ce_target)
         preds = ce_in.argmax(1)
         return preds, loss
@@ -107,10 +115,12 @@ class MESoftNet(nn.Module):
         self.pc_embed = BitsplitEmbedding(num_bits, splits, embed_dim, signed=False)
         self.delta_embed = BitsplitEmbedding(num_bits, splits, embed_dim)
         self.type_embed = nn.Embedding(3, type_dim)
+
         self.lstm = nn.LSTM(3*embed_dim + type_dim, hidden_dim, num_layers,
                             batch_first=True, dropout=dropout)
         self.lin_magnitude = nn.Linear(hidden_dim, 2*splits*self.num_classes)
         self.lin_sign = nn.Linear(hidden_dim, 2)
+
         self.m_soft = MultibitSoftmax(num_bits, splits)
         self.CE = nn.CrossEntropyLoss()
 
@@ -161,29 +171,88 @@ class MESoftNet(nn.Module):
         preds = torch.cat([mag_preds, sign_preds], dim=-1)
         return preds, state
 
+def MESoft_acc(preds, target, splits, len_split, num_blocks=2):
+    pos = torch.zeros_like(target)
+    neg = torch.zeros_like(target)
+    pred_delta = torch.zeros_like(target)
+    coef = 1
+    signs = preds[:, -1]
+
+    for i in range(splits):
+        pos += coef * preds[:, i]
+        neg -= coef * preds[:, i + splits]
+        coef <<= splits
+    pred_delta = pos * signs + neg * (1 - signs)
+    diff = pred_delta - target
+    upper = diff.lt(64 * num_blocks/2)
+    lower = diff.ge(-64 * num_blocks/2)
+    eq = torch.bitwise_and(upper, lower)
+
+    acc = eq.sum() / eq.shape[0]
+    return acc.item()
+
 def main(argv):
-    N = 3
-    num_bits = 16
-    splits = 4
+    # Reproducibility
+    torch.manual_seed(0)
+
+    # Training code
+    datafile = args.datafile
+    train_size = args.train_size
+    pc, delta, types, target = T.load_data(datafile, train_size)
+    num_bits = 64
+
+    # Train and val setup
+    batch_size = args.batch_size
+    train_iter = T.setup_data(pc, delta, types, target, batch_size=batch_size)
+    pc_v, delta_v, types_v, target_v = T.load_data(datafile, args.val_size, skip=train_size)
+
+    # Model parameters
+    splits = 8
     len_split = int(num_bits/splits)
-    d = 2 * splits * (2**len_split)
-    e_dim = 16
+    e_dim = 256
+    t_dim = 16
+    h_dim = 256
+    layers = 2
+    lr = 1e-3
 
-    net = MESoftNet(num_bits, e_dim, 5, 128, 2)
-    pc = torch.randint(2**num_bits, (N,))
-    delta = torch.randint(-(2**num_bits), 2**num_bits - 1, (N,))
-    types = torch.randint(3, (N,))
+    # Create net and scheduler
+    net = MESoftNet(num_bits, e_dim, t_dim, h_dim, layers, splits=splits)
+    optimizer = torch.optim.Adam(net.parameters(), lr=lr)
+
+    epochs = args.epochs
+    print_interval = args.print_interval
+    loss_list = T.train_net(net, train_iter, epochs, optimizer, print_interval=print_interval)
+
+    # Training Accuracy
     X = (pc, delta, types)
-    target = torch.randint(-(2**num_bits), 2**num_bits - 1, (N,))
+    preds, _ = net.predict(X, None)
+    acc2_t = MESoft_acc(preds, target, splits, len_split)
+    acc10_t = MESoft_acc(preds, target, splits, len_split, num_blocks=10)
 
-    loss, preds, state = net(X, None, target)
-    print(loss)
-    print(preds.shape)
-    loss.backward()
+    # Validation Accuracy
+    X_v = (pc_v, delta_v, types_v)
+    preds_v, _ = net.predict(X_v, None)
 
-    state = (state[0].detach(), state[1].detach())
-    loss, preds, state = net(X, state, target)
-    loss.backward()
+    acc2_v = MESoft_acc(preds_v, target_v, splits, len_split)
+    acc10_v = MESoft_acc(preds_v, target_v, splits, len_split, num_blocks=10)
+
+    print("Train Accuracy at 2:\t{:.6f}".format(acc2_t))
+    print("Val Accuracy at 2:\t{:.6f}".format(acc2_v))
+
+    print("Train Accuracy at 10:\t{:.6f}".format(acc10_t))
+    print("Val Accuracy at 10:\t{:.6f}".format(acc10_v))
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("datafile", help="Input data set to train/test on", type=str)
+    parser.add_argument("--train_size", help="Size of training set", default=500, type=int)
+    parser.add_argument("--batch_size", help="Batch size for training", default=50, type=int)
+    parser.add_argument("--val_size", help="Size of training set", default=150, type=int)
+    parser.add_argument("--epochs", help="Number of epochs to train", default=200, type=int)
+    parser.add_argument("--print_interval", help="Print loss during training", default=10, type=int)
+    parser.add_argument("--cuda", help="Use cuda or not", action="store_true", default=True)
+    parser.add_argument("--model_file", help="File to load/save model parameters to continue training", default=None, type=str)
+    parser.add_argument("-e", help="Load and evaluate only", action="store_true", default=False)
+
+    args = parser.parse_args()
     main(sys.argv)
