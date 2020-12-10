@@ -109,21 +109,30 @@ class MESoftNet(nn.Module):
     def __init__(self, num_bits, embed_dim, type_dim, hidden_dim, num_layers=1,
                  dropout=0.1, splits=8, sign_weight=1):
         super(MESoftNet, self).__init__()
+
+        # Saved parameters
         self.num_bits = num_bits
         self.splits = splits
         self.len_split = int(num_bits/splits)
         self.num_classes = 1 << self.len_split
         self.sign_weight = sign_weight
 
+        # Embedding layers
         self.pc_embed = BitsplitEmbedding(num_bits, splits, embed_dim, signed=False)
         self.delta_embed = BitsplitEmbedding(num_bits, splits, embed_dim)
         self.type_embed = nn.Embedding(3, type_dim)
 
+        # Lstm layers
         self.lstm = nn.LSTM(3*embed_dim + type_dim, hidden_dim, num_layers,
                             batch_first=True, dropout=dropout)
         self.lstm_drop = nn.Dropout(dropout)
-        self.lin_magnitude = nn.Linear(hidden_dim, 2*splits*self.num_classes)
-        self.lin_sign = nn.Linear(hidden_dim, 2)
+
+        # Linear and output layers
+        output_len = 2 * splits * self.num_classes
+        self.mid_lin = nn.Linear(hidden_dim, self.num_classes)
+        self.relu = nn.ReLU()
+        self.lin_magnitude = nn.Linear(self.num_classes, output_len)
+        self.lin_sign = nn.Linear(self.num_classes, 2)
 
         self.m_soft = MultibitSoftmax(num_bits, splits)
         self.CE = nn.CrossEntropyLoss()
@@ -144,9 +153,14 @@ class MESoftNet(nn.Module):
         lstm_out, state = self.lstm(lstm_in, lstm_state)
         lstm_out = self.lstm_drop(lstm_out)
 
+        # Linear Layers
+        lin_out = self.relu(self.mid_lin(lstm_out))
+
         # Separately calculate magnitude values and signs
-        mag = self.lin_magnitude(lstm_out).squeeze()
-        sign_probs = self.lin_sign(lstm_out).squeeze()
+        mag = self.lin_magnitude(lin_out).squeeze()
+        sign_probs = self.lin_sign(lin_out).squeeze()
+        # mag = self.lin_magnitude(lstm_out).squeeze()
+        # sign_probs = self.lin_sign(lstm_out).squeeze()
 
         # Loss and prediction calculation
         mag_preds, mag_loss = self.m_soft(mag, target)
@@ -168,8 +182,11 @@ class MESoftNet(nn.Module):
         lstm_in = torch.cat((pc, delta, types), dim=-1).unsqueeze(0)
         lstm_out, state = self.lstm(lstm_in, lstm_state)
 
-        mag = self.lin_magnitude(lstm_out).squeeze()
-        sign_probs = self.lin_sign(lstm_out).squeeze()
+        lin_out = self.relu(self.mid_lin(lstm_out))
+        mag = self.lin_magnitude(lin_out).squeeze()
+        sign_probs = self.lin_sign(lin_out).squeeze()
+        # mag = self.lin_magnitude(lstm_out).squeeze()
+        # sign_probs = self.lin_sign(lstm_out).squeeze()
 
         mag_preds = self.m_soft.predict(mag)
         sign_preds = sign_probs.argmax(-1).unsqueeze(-1)
@@ -198,9 +215,8 @@ def MESoft_acc(preds, target, splits, len_split, num_blocks=2, device='cpu'):
     return acc.item()
 
 def MESoft_train_eval(net, data_iter, epochs, optimizer, device='cpu', scheduler=None,
-                    print_interval=10, val_freq=4):
+                    print_interval=10, val_freq=4, e_start=0):
     loss_list = []
-    net = net.to(device)
     net.train()
     print("Train Start:")
     for e in range(epochs):
@@ -228,7 +244,7 @@ def MESoft_train_eval(net, data_iter, epochs, optimizer, device='cpu', scheduler
         loss = torch.Tensor(epoch_loss).mean()
         loss_list.append(loss)
         if (e+1) % print_interval == 0:
-            print(f"\tEpoch {e+1}\tLoss:\t{loss:.8f}")
+            print(f"\tEpoch {e+1 + e_start}\tLoss:\t{loss:.8f}")
 
     # Evaluate training and val accuracy
     net.eval()
@@ -277,25 +293,30 @@ def main(argv):
     # Train and val setup
     batch_size = args.batch_size
     data_iter = T.setup_data(pc, delta, types, target, batch_size=batch_size)
-    # pc_v, delta_v, types_v, target_v = T.load_data(datafile, args.val_size, skip=train_size)
 
     # Model parameters
     splits = 8
     len_split = int(num_bits/splits)
-    e_dim = 128
+    e_dim = 256
     t_dim = 16
-    h_dim = 128
+    h_dim = 1024
     layers = 2
     dropout = 0.2
-    lr = 1e-3
 
-    # Create net and scheduler
+    # Create net
     net = MESoftNet(num_bits, e_dim, t_dim, h_dim, layers, splits=splits, dropout=dropout)
     if args.cuda:
         device = torch.device('cuda:0')
+        net = net.to(device)
     else:
         device = 'cpu'
+
+    # Optimizer and scheduler
+    lr = 1e-5
     optimizer = torch.optim.Adam(net.parameters(), lr=lr)
+    # optimizer = torch.optim.Adagrad(net.parameters(), lr=lr, weight_decay=0.1)
+    # scheduler = None
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 5, gamma=0.2)
 
     # Check for model file
     if args.model_file != None:
@@ -304,36 +325,12 @@ def main(argv):
 
     # Training parameters
     epochs = args.epochs
-    print_interval = args.print_interval
-    tup = MESoft_train_eval(net, data_iter, epochs, optimizer, device=device,
-                            print_interval=print_interval, val_freq=5)
+    val_freq = args.val_freq
+    print_in = args.print
+    e_start = args.init_epochs
+    tup = MESoft_train_eval(net, data_iter, epochs, optimizer, device=device, scheduler=scheduler,
+                            print_interval=print_in, val_freq=val_freq, e_start = e_start)
     loss_list, acc2_t, acc10_t, acc2_v, acc10_v = tup
-
-    # loss_list = T.train_net(net, train_iter, epochs, optimizer, device=device,
-    #                         print_interval=print_interval)
-
-    # # Training Accuracy
-    # if args.cuda:
-    #     pc = pc.to(device)
-    #     delta = delta.to(device)
-    #     types = types.to(device)
-    #     target = target.to(device)
-    # X = (pc, delta, types)
-    # preds, _ = net.predict(X, None)
-    # acc2_t = MESoft_acc(preds, target, splits, len_split, device=device)
-    # acc10_t = MESoft_acc(preds, target, splits, len_split, num_blocks=10, device=device)
-
-    # # Validation Accuracy
-    # if args.cuda:
-    #     pc_v = pc_v.to(device)
-    #     delta_v = delta_v.to(device)
-    #     types_v = types_v.to(device)
-    #     target_v = target_v.to(device)
-    # X_v = (pc_v, delta_v, types_v)
-    # preds_v, _ = net.predict(X_v, None)
-
-    # acc2_v = MESoft_acc(preds_v, target_v, splits, len_split, device=device)
-    # acc10_v = MESoft_acc(preds_v, target_v, splits, len_split, num_blocks=10, device=device)
 
     print("Train Accuracy at 2:\t{:.6f}".format(acc2_t))
     print("Val Accuracy at 2:\t{:.6f}".format(acc2_v))
@@ -348,11 +345,12 @@ def main(argv):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("datafile", help="Input data set to train/test on", type=str)
-    parser.add_argument("--train_size", help="Size of training set", default=15000, type=int)
-    parser.add_argument("--batch_size", help="Batch size for training", default=100, type=int)
-    # parser.add_argument("--val_size", help="Size of training set", default=2000, type=int)
+    parser.add_argument("--train_size", help="Size of training set", default=1000000, type=int)
+    parser.add_argument("--batch_size", help="Batch size for training", default=1000, type=int)
+    parser.add_argument("--val_freq", help="Freq for Val interleaving", default=4, type=int)
     parser.add_argument("--epochs", help="Number of epochs to train", default=1000, type=int)
-    parser.add_argument("--print_interval", help="Print loss during training", default=10, type=int)
+    parser.add_argument("--init_epochs", help="Number of epochs to pretrained", default=0, type=int)
+    parser.add_argument("--print", help="Print loss during training", default=10, type=int)
     parser.add_argument("--cuda", help="Use cuda or not", action="store_true", default=False)
     parser.add_argument("--model_file", help="File to load/save model parameters to continue training", default=None, type=str)
     parser.add_argument("-e", help="Load and evaluate only", action="store_true", default=False)

@@ -7,11 +7,11 @@ from binary_nn import PrefetchBinary
 from bits_module import un_binarize
 
 # Load data from input file
-def load_data(infile, nrows, skip=None):
-    if skip == None:
+def load_data(infile, nrows):
+    if nrows != -1:
         data = pd.read_csv(infile, nrows=nrows)
     else:
-        data = pd.read_csv(infile, nrows=nrows, skiprows=range(1, skip+1))
+        data = pd.read_csv(infile)
     pc = torch.tensor(data['pc'].to_numpy())
     delta_in = torch.tensor(data['delta_in'].to_numpy())
     types = torch.tensor(data['type'].to_numpy())

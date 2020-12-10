@@ -2,3 +2,4 @@
 benchmark_programs
 data/processing
 *.pkl
+data/*whole.csv
