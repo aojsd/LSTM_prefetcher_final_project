@@ -280,11 +280,11 @@ def main(argv):
     # pc_v, delta_v, types_v, target_v = T.load_data(datafile, args.val_size, skip=train_size)
 
     # Model parameters
-    splits = 16
+    splits = 8
     len_split = int(num_bits/splits)
-    e_dim = 512
+    e_dim = 128
     t_dim = 16
-    h_dim = 1024
+    h_dim = 128
     layers = 2
     dropout = 0.2
     lr = 1e-3
