@@ -76,11 +76,9 @@ def eval_net(net, eval_iter, device="cpu", state=None):
     
     net.eval()
     prob_acc_list = []
-    block_acc_list = []
     
     for i, eval_data in enumerate(eval_iter):
         eval_data = [ds.to(device) for ds in eval_data]
-        
         X = eval_data[:-1]
         target = eval_data[-1]
 
@@ -89,18 +87,21 @@ def eval_net(net, eval_iter, device="cpu", state=None):
         prob_acc = comp_acc.prob_acc(preds.cpu(), target.cpu())
         prob_acc_list.append(prob_acc)
 
-        block_acc = comp_acc.block_acc(preds.cpu(), target.cpu())
-        block_acc_list.append(block_acc)
-
     if train_acc:
         print("Training Prob Acc.: {:.4f}".format(torch.tensor(prob_acc_list).mean()))
-        print("Training Block Acc.: {:.4f}".format(torch.tensor(block_acc_list).mean()))
     else:
         print("Val Prob Acc.: {:.4f}".format(torch.tensor(prob_acc_list).mean()))
-        print("Val Acc.: {:.4f}".format(torch.tensor(block_acc_list).mean()))
     
     return state
 
+
+def prob_acc(pred, target):
+    # pred shape: (N, K = 10)
+    # target: (N, 1)
+    for B in target:
+        if target[B,] in pred[B,]:
+            pass
+        
 
 def main(args):
     # Reproducibility
