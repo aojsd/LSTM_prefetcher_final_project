@@ -1,5 +1,6 @@
 import sys
 import argparse
+import os
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -196,6 +197,73 @@ def MESoft_acc(preds, target, splits, len_split, num_blocks=2, device='cpu'):
     acc = eq.sum() / eq.shape[0]
     return acc.item()
 
+def MESoft_train_eval(net, data_iter, epochs, optimizer, device='cpu', scheduler=None,
+                    print_interval=10, val_freq=4):
+    loss_list = []
+    net = net.to(device)
+    net.train()
+    print("Train Start:")
+    for e in range(epochs):
+        state = None
+        epoch_loss = []
+        for i, data in enumerate(data_iter):
+            data = [ds.to(device) for ds in data]
+            X = data[:-1]
+            target = data[-1]
+            loss, out, state = net(X, state, target)
+
+            # Interleave validation set, don't train
+            if (i+1) % val_freq != 0:
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                epoch_loss.append(loss)
+            
+            # Detach state gradients to avoid autograd errors
+            state = tuple([s.detach() for s in list(state)])
+
+        if scheduler != None:
+            scheduler.step()
+        
+        loss = torch.Tensor(epoch_loss).mean()
+        loss_list.append(loss)
+        if (e+1) % print_interval == 0:
+            print(f"\tEpoch {e+1}\tLoss:\t{loss:.8f}")
+
+    # Evaluate training and val accuracy
+    net.eval()
+    state = None
+    train_acc2_list = []
+    val_acc2_list = []
+    train_acc10_list = []
+    val_acc10_list = []
+    for i, data in enumerate(data_iter):
+        data = [ds.to(device) for ds in data]
+        X = data[:-1]
+        target = data[-1]
+        preds, state = net.predict(X, state)
+
+        # Calculate accuracy
+        acc_2 = MESoft_acc(preds, target, net.splits, net.len_split, device=device)
+        acc_10 = MESoft_acc(preds, target, net.splits, net.len_split, num_blocks=10,
+                            device=device)
+
+        # Check if its for train or val acc
+        if (i+1) % val_freq != 0:
+            train_acc2_list.append(acc_2)
+            train_acc10_list.append(acc_10)
+        else:
+            val_acc2_list.append(acc_2)
+            val_acc10_list.append(acc_10)
+
+    # Calculate overall accuracy
+    train_acc2 = torch.tensor(train_acc2_list).mean()
+    train_acc10 = torch.tensor(train_acc10_list).mean()
+    val_acc2 = torch.tensor(val_acc2_list).mean()
+    val_acc10 = torch.tensor(val_acc10_list).mean()
+
+    return loss_list, train_acc2, train_acc10, val_acc2, val_acc10
+
 def main(argv):
     # Reproducibility
     torch.manual_seed(0)
@@ -208,15 +276,15 @@ def main(argv):
 
     # Train and val setup
     batch_size = args.batch_size
-    train_iter = T.setup_data(pc, delta, types, target, batch_size=batch_size)
-    pc_v, delta_v, types_v, target_v = T.load_data(datafile, args.val_size, skip=train_size)
+    data_iter = T.setup_data(pc, delta, types, target, batch_size=batch_size)
+    # pc_v, delta_v, types_v, target_v = T.load_data(datafile, args.val_size, skip=train_size)
 
     # Model parameters
-    splits = 8
+    splits = 16
     len_split = int(num_bits/splits)
-    e_dim = 256
+    e_dim = 512
     t_dim = 16
-    h_dim = 256
+    h_dim = 1024
     layers = 2
     dropout = 0.2
     lr = 1e-3
@@ -229,34 +297,43 @@ def main(argv):
         device = 'cpu'
     optimizer = torch.optim.Adam(net.parameters(), lr=lr)
 
+    # Check for model file
+    if args.model_file != None:
+        if os.path.exists(args.model_file):
+            net.load_state_dict(torch.load(args.model_file))
+
     # Training parameters
     epochs = args.epochs
     print_interval = args.print_interval
-    loss_list = T.train_net(net, train_iter, epochs, optimizer, device=device,
-                            print_interval=print_interval)
+    tup = MESoft_train_eval(net, data_iter, epochs, optimizer, device=device,
+                            print_interval=print_interval, val_freq=5)
+    loss_list, acc2_t, acc10_t, acc2_v, acc10_v = tup
 
-    # Training Accuracy
-    if args.cuda:
-        pc = pc.to(device)
-        delta = delta.to(device)
-        types = types.to(device)
-        target = target.to(device)
-    X = (pc, delta, types)
-    preds, _ = net.predict(X, None)
-    acc2_t = MESoft_acc(preds, target, splits, len_split, device=device)
-    acc10_t = MESoft_acc(preds, target, splits, len_split, num_blocks=10, device=device)
+    # loss_list = T.train_net(net, train_iter, epochs, optimizer, device=device,
+    #                         print_interval=print_interval)
 
-    # Validation Accuracy
-    if args.cuda:
-        pc_v = pc_v.to(device)
-        delta_v = delta_v.to(device)
-        types_v = types_v.to(device)
-        target_v = target_v.to(device)
-    X_v = (pc_v, delta_v, types_v)
-    preds_v, _ = net.predict(X_v, None)
+    # # Training Accuracy
+    # if args.cuda:
+    #     pc = pc.to(device)
+    #     delta = delta.to(device)
+    #     types = types.to(device)
+    #     target = target.to(device)
+    # X = (pc, delta, types)
+    # preds, _ = net.predict(X, None)
+    # acc2_t = MESoft_acc(preds, target, splits, len_split, device=device)
+    # acc10_t = MESoft_acc(preds, target, splits, len_split, num_blocks=10, device=device)
 
-    acc2_v = MESoft_acc(preds_v, target_v, splits, len_split, device=device)
-    acc10_v = MESoft_acc(preds_v, target_v, splits, len_split, num_blocks=10, device=device)
+    # # Validation Accuracy
+    # if args.cuda:
+    #     pc_v = pc_v.to(device)
+    #     delta_v = delta_v.to(device)
+    #     types_v = types_v.to(device)
+    #     target_v = target_v.to(device)
+    # X_v = (pc_v, delta_v, types_v)
+    # preds_v, _ = net.predict(X_v, None)
+
+    # acc2_v = MESoft_acc(preds_v, target_v, splits, len_split, device=device)
+    # acc10_v = MESoft_acc(preds_v, target_v, splits, len_split, num_blocks=10, device=device)
 
     print("Train Accuracy at 2:\t{:.6f}".format(acc2_t))
     print("Val Accuracy at 2:\t{:.6f}".format(acc2_v))
@@ -264,13 +341,17 @@ def main(argv):
     print("Train Accuracy at 10:\t{:.6f}".format(acc10_t))
     print("Val Accuracy at 10:\t{:.6f}".format(acc10_v))
 
+    # Save model parameters
+    if args.model_file != None:
+        torch.save(net.cpu().state_dict(), args.model_file)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("datafile", help="Input data set to train/test on", type=str)
-    parser.add_argument("--train_size", help="Size of training set", default=10000, type=int)
-    parser.add_argument("--batch_size", help="Batch size for training", default=50, type=int)
-    parser.add_argument("--val_size", help="Size of training set", default=2000, type=int)
-    parser.add_argument("--epochs", help="Number of epochs to train", default=150, type=int)
+    parser.add_argument("--train_size", help="Size of training set", default=15000, type=int)
+    parser.add_argument("--batch_size", help="Batch size for training", default=100, type=int)
+    # parser.add_argument("--val_size", help="Size of training set", default=2000, type=int)
+    parser.add_argument("--epochs", help="Number of epochs to train", default=1000, type=int)
     parser.add_argument("--print_interval", help="Print loss during training", default=10, type=int)
     parser.add_argument("--cuda", help="Use cuda or not", action="store_true", default=False)
     parser.add_argument("--model_file", help="File to load/save model parameters to continue training", default=None, type=str)
