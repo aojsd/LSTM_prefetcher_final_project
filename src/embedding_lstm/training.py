@@ -1,7 +1,6 @@
 import argparse
 import pandas as pd
 import torch
-import torch.nn as nn
 
 
 # Load data from input file
