@@ -7,7 +7,8 @@ class EmbeddingLSTM(nn.Module):
     def __init__(
         self,
         num_pc,
-        num_delta,
+        num_input_delta,
+        num_output_delta,
         embed_dim,
         hidden_dim,
         num_pred=10,  # how many predictions to return
@@ -18,7 +19,7 @@ class EmbeddingLSTM(nn.Module):
 
         # The concatenation of these two things will be the input to the LSTM
         self.pc_embed = nn.Embedding(num_pc, embed_dim)
-        self.delta_embed = nn.Embedding(num_delta, embed_dim)
+        self.delta_embed = nn.Embedding(num_input_delta, embed_dim)
 
         self.lstm = nn.LSTM(
             embed_dim * 2,
@@ -29,7 +30,7 @@ class EmbeddingLSTM(nn.Module):
 
         # Although the paper doesn't mention it, the output from the LSTM needs
         # to be converted to probabilities over the possible deltas.
-        self.fc = nn.Linear(hidden_dim, num_delta)
+        self.fc = nn.Linear(hidden_dim, num_output_delta)
         self.num_pred = num_pred
 
     def forward(self, X, lstm_state, target=None):
@@ -71,7 +72,7 @@ def test_net():
     delta = torch.arange(3, -1, -1)  # [3, 2, 1, 0]
     target = torch.arange(0, 4)
 
-    net = EmbeddingLSTM(4, 4, 10, 30, num_pred=2)
+    net = EmbeddingLSTM(4, 4, 4, 10, 30, num_pred=2)
 
     print("Testing forward pass of embedding LSTM")
     loss, preds, state = net((pc, delta), None, target)
