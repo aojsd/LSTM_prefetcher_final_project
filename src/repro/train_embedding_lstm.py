@@ -1,39 +1,8 @@
 import argparse
 import pandas as pd
 import torch
-from model import EmbeddingLSTM
-from vocab import Vocab
-
-
-def build_vocabs(infile, num_output_deltas=50000):
-    """
-    Reads the entire CSV and figures out:
-        - The number of PCs
-        - The input deltas that occur at least 10 times
-        - The 50,000 most frequent and unique deltas
-    """
-    data = pd.read_csv(infile)
-
-    # TODO: do PCs need to be sorted?
-    pc_vocab = Vocab(data["pc"].drop_duplicates())
-
-    delta_vocab = Vocab(
-        data["delta_in"]
-        .value_counts()  # Get how frequently each delta appears
-        .loc[lambda count: count >= 10]  # Filter out uncommon input deltas
-        .keys()  # Only keep the deltas
-        .tolist()
-    )
-
-    target_vocab = Vocab(
-        data["delta_out"]
-        .value_counts()
-        .nlargest(num_output_deltas)  # Limit to 50,000 most common
-        .keys()
-        .tolist()
-    )
-
-    return pc_vocab, delta_vocab, target_vocab
+from vocab import build_vocabs
+from embedding_lstm import EmbeddingLSTM
 
 
 # Load data from input file
