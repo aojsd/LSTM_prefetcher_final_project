@@ -4,59 +4,23 @@ import torch
 from sklearn.cluster import KMeans
 from vocab import build_vocabs
 from clustering_lstm import ClusteringLSTM
+from train_utils import train_net, eval_net
 
 
-def fit_kmeans(data):
-    #clustering the data by the address
-    kmeans6 = KMeans(n_clusters = 6)
-    kmeans6.fit(data[["addr"]])
-    return kmeans6
-
-
-def calc_deltas(input_data):
-    output_data = pd.DataFrame()
-
-    output_data["id"] = input_data["id"]
-    output_data["pc"] = input_data["pc"]
-    output_data["cluster"] = input_data["cluster"]
-
-    output_data["delta_out"] = (input_data["addr"] - input_data["addr"].shift(-1))
-    output_data["delta_in"] = output_data["delta_out"].shift(1)
-    output_data = output_data.dropna()
-
-    return output_data   
-
-
-def read_data(infile, nrows, skip=None):
+# Load data from input file
+def load_data(infile, nrows, vocabs, batch_size=2, skip=None):
     if skip == None:
         data = pd.read_csv(infile, nrows=nrows)
     else:
         data = pd.read_csv(infile, nrows=nrows, skiprows=range(1, skip + 1))
 
-    convert_hex_to_dec = lambda x: int(x, 16)
-    data["pc"] = data["pc"].apply(convert_hex_to_dec)
-    data["addr"] = data["addr"].apply(convert_hex_to_dec)
-    return data
-
-
-# Load data from input file
-def process_data(data, kmeans, batch_size=2):
-    data["cluster"] = kmeans.predict(data[["addr"]])
-    data["id"] = range(len(data))
-
-    cluster_dfs = [
-        calc_deltas(data[data.cluster == cluster_id]) 
-        for cluster_id in range(6)
-    ]
-
-    data = pd.concat(cluster_dfs).sort_values(by=["id"]).drop(["id"], axis=1)
-    print(data)
+    pc_vocab, delta_vocab, target_vocab = vocabs
 
     # Convert data to PyTorch tensors
-    pc = torch.tensor(data["pc"].to_numpy())
-    delta_in = torch.tensor(data["delta_in"].to_numpy())
+    pc = torch.tensor(data["pc"].map(pc_vocab.get_val).to_numpy())
+    delta_in = torch.tensor(data["delta_in"].map(delta_vocab.get_val).to_numpy())
     clusters = torch.tensor(data["cluster"].to_numpy())
-    targets = torch.tensor(data["delta_out"].to_numpy())
+    targets = torch.tensor(data["delta_out"].map(target_vocab.get_val).to_numpy())
 
     # Wrap tensors in a DataLoader object for convenience
     dataset = torch.utils.data.TensorDataset(pc, delta_in, clusters, targets)
@@ -68,21 +32,20 @@ def main(args):
     # Reproducibility
     torch.manual_seed(0)
 
-    # Training and validation data setup
-    train_data = read_data(args.datafile, args.train_size)
-
-    kmeans = fit_kmeans(train_data)
-    
-    train_iter = process_data(train_data, kmeans, batch_size=args.batch_size)
-
-    eval_data = read_data(args.datafile, args.val_size, skip=args.train_size)
-    eval_iter = process_data(eval_data, kmeans, batch_size=args.val_size)
+    # Training and validation data setup (datafile is the processed version)
+    vocabs = build_vocabs(args.datafile, args.train_size)
+    train_iter = load_data(args.datafile, args.train_size, vocabs, batch_size=args.batch_size)
+    eval_iter = load_data(args.datafile, args.val_size, vocabs, skip=args.train_size, batch_size=args.batch_size)
 
     # Check for cuda usage
     device = torch.device("cuda:0") if args.cuda else "cpu"
 
     # Input/Output dimensions (add 1 for deltas that we're not training on)
-
+    pc_vocab, delta_vocab, target_vocab = vocabs
+    num_pc = len(pc_vocab) + 1
+    num_input_delta = len(delta_vocab) + 1
+    num_output_delta = len(target_vocab) + 1
+    
     # Tunable hyperparameters
     num_pred = 10
     embed_dim = 256
@@ -97,6 +60,7 @@ def main(args):
         num_output_delta,
         embed_dim,
         hidden_dim,
+        num_clusters=6,
         num_pred=num_pred,
         num_layers=num_layers,
         dropout=dropout,
@@ -164,8 +128,3 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     main(args)
-
-
-if __name__ == "__main__":
-    kmeans = fit_kmeans()
-    load_data("data/raw/pi_noprefetch_raw.csv", nrows = 15000)

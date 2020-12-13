@@ -31,14 +31,14 @@ class Vocab:
             self.counter += 1
 
 
-def build_vocabs(infile, num_output_deltas=50000):
+def build_vocabs(infile, nrows, num_output_deltas=50000):
     """
     Reads the entire CSV and figures out:
         - The number of PCs
         - The input deltas that occur at least 10 times
         - The 50,000 most frequent and unique deltas
     """
-    data = pd.read_csv(infile)
+    data = pd.read_csv(infile, nrows=nrows)
 
     # TODO: do PCs need to be sorted?
     pc_vocab = Vocab(data["pc"].drop_duplicates())
