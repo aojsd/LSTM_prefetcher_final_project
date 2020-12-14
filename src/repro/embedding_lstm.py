@@ -30,7 +30,7 @@ class EmbeddingLSTM(nn.Module):
 
         # Although the paper doesn't mention it, the output from the LSTM needs
         # to be converted to probabilities over the possible deltas.
-        self.fc = nn.Linear(hidden_dim, num_output_delta)
+        self.fc = nn.Linear(hidden_dim, num_output_delta, dropout=dropout)
         self.num_pred = num_pred
 
     def forward(self, X, lstm_state, target=None):

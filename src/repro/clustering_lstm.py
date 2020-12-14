@@ -31,7 +31,7 @@ class ClusteringLSTM(nn.Module):
 
         self.cluster_networks = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(hidden_dim, num_output_delta),
+                nn.Linear(hidden_dim, num_output_delta, dropout=dropout),
             )
             for _ in range(num_clusters)
         ])

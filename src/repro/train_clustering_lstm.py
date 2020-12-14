@@ -1,3 +1,4 @@
+import os
 import torch
 from vocab import build_vocabs
 from clustering_lstm import ClusteringLSTM
@@ -61,14 +62,17 @@ def main(args):
 
     # Check for existing model
     if args.model_file != None:
-        model.load_state_dict(torch.load(args.model_file))
+        if os.path.exists(args.model_file):
+            print("Loading model from file: {}".format(args.model_file))
+            model.load_state_dict(torch.load(args.model_file))
+        else:
+            print("Model file does not exist, training from scratch...")
 
     # Check for cuda usage
     device = torch.device("cuda:0") if args.cuda else "cpu"
 
-    # Train
     if not args.e:
-        loss_list = train_net(
+        train_net(
             model,
             batch_iter,
             args.epochs,
@@ -78,15 +82,11 @@ def main(args):
             print_interval=args.print_interval,
         )
 
-    # Eval
-    if args.e:
+        if args.model_file != None:
+            torch.save(model.cpu().state_dict(), args.model_file)
+    else:
         model = model.to(device)
-
-    eval_net(model, batch_iter, args.val_freq, device=device)
-
-    # Save model parameters
-    if args.model_file != None:
-        torch.save(model.cpu().state_dict(), args.model_file)
+        eval_net(model, batch_iter, args.val_freq, device=device)
 
 
 if __name__ == "__main__":

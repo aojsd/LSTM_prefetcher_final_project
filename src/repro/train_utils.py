@@ -49,18 +49,16 @@ def train_net(
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-                loss_list.append(loss)
+                loss_list.append(loss.cpu())
+
+                if (i + 1) % print_interval == 0:
+                    print(f"Epoch {e + 1}, Batch {i + 1}, Loss:\t{loss_list[-1]:.8f}")
 
             # Detach state gradients to avoid autograd errors
             state = tuple([s.detach() for s in list(state)])
 
         if scheduler != None:
             scheduler.step()
-
-        if (e + 1) % print_interval == 0:
-            print(f"Epoch {e+1}\tLoss:\t{loss_list[-1]:.8f}")
-            eval_net(net, batch_iter, val_freq, device=device)
-            print()
 
     return loss_list
 
