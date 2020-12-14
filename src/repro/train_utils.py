@@ -1,9 +1,30 @@
+import argparse
 import torch
+import pandas as pd
+
+
+def read_data(infile, train_size, val_size, batch_size, val_freq, parse_hex=False):
+    data = pd.read_csv(infile, nrows=(train_size + val_size))
+
+    if parse_hex:
+        convert_hex_to_dec = lambda x: int(x, 16)
+        data["pc"] = data["pc"].apply(convert_hex_to_dec)
+        data["addr"] = data["addr"].apply(convert_hex_to_dec)
+
+    train_data = data[(data.index // batch_size) % val_freq != (val_freq - 1)]
+    return data, train_data
 
 
 # Train the network
 def train_net(
-    net, train_iter, epochs, optimizer, device="cpu", scheduler=None, print_interval=10
+    net,
+    batch_iter,
+    epochs,
+    optimizer,
+    val_freq,
+    device="cpu",
+    scheduler=None,
+    print_interval=10,
 ):
     loss_list = []
     net = net.to(device)
@@ -16,21 +37,19 @@ def train_net(
         net.train()
         state = None
 
-        for train_data in train_iter:
-            train_data = [ds.to(device) for ds in train_data]
+        for i, data in enumerate(batch_iter):
+            data = [ds.to(device) for ds in data]
+            X = data[:-1]
+            target = data[-1]
 
-            # Because of how the data is wrapped up into the DataLoader in `load_data`,
-            # the first three things are pc, delta_in, and types, and the last thing
-            # is the targets (delta_out).
-            X = train_data[:-1]
-            target = train_data[-1]
+            loss, _, state = net(X, state, target)
 
-            loss, out, state = net(X, state, target)
-
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            loss_list.append(loss)
+            # Interleave training and validation
+            if (i + 1) % val_freq != 0:
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                loss_list.append(loss)
 
             # Detach state gradients to avoid autograd errors
             state = tuple([s.detach() for s in list(state)])
@@ -39,7 +58,9 @@ def train_net(
             scheduler.step()
 
         if (e + 1) % print_interval == 0:
-            print(f"\tEpoch {e+1}\tLoss:\t{loss_list[-1]:.8f}")
+            print(f"Epoch {e+1}\tLoss:\t{loss_list[-1]:.8f}")
+            eval_net(net, batch_iter, val_freq, device=device)
+            print()
 
     return loss_list
 
@@ -48,7 +69,7 @@ def prob_acc(pred, target):
     # pred shape: (N, K = 10)
     # target: (N, 1)
     num_correct = 0
-    
+
     for expected_delta, predictions in zip(target, pred):
         if expected_delta in predictions:
             num_correct += 1
@@ -57,24 +78,64 @@ def prob_acc(pred, target):
 
 
 # Evaluate the network on a labeled dataset
-def eval_net(net, eval_iter, device="cpu", state=None):
-    train_acc = state == None
+def eval_net(net, batch_iter, val_freq, device="cpu", state=None):
     net.eval()
-    prob_acc_list = []
+    train_acc_list = []
+    eval_acc_list = []
 
-    for i, eval_data in enumerate(eval_iter):
-        eval_data = [ds.to(device) for ds in eval_data]
-        X = eval_data[:-1]
-        target = eval_data[-1]
+    for i, data in enumerate(batch_iter):
+        data = [ds.to(device) for ds in data]
+        X = data[:-1]
+        target = data[-1]
 
         preds, state = net.predict(X, state)
-
         acc = prob_acc(preds.cpu(), target.cpu())
-        prob_acc_list.append(acc)
 
-    if train_acc:
-        print("Training Prob Acc.: {:.4f}".format(torch.tensor(prob_acc_list).mean()))
-    else:
-        print("Val Prob Acc.: {:.4f}".format(torch.tensor(prob_acc_list).mean()))
+        # Interleave training and validation
+        if (i + 1) % val_freq != 0:
+            train_acc_list.append(acc)
+        else:
+            eval_acc_list.append(acc)
 
-    return state
+    print("Train Acc.: {:.4f}".format(torch.tensor(train_acc_list).mean()))
+    print("Val Acc.: {:.4f}".format(torch.tensor(eval_acc_list).mean()))
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("datafile", help="Input data set to train/test on", type=str)
+    parser.add_argument(
+        "--train_size", help="Size of training set", default=5000, type=int
+    )
+    parser.add_argument(
+        "--batch_size", help="Batch size for training", default=50, type=int
+    )
+    parser.add_argument(
+        "--val_size", help="Size of training set", default=1500, type=int
+    )
+    parser.add_argument(
+        "--val_freq",
+        help="Frequency to use batches for evaluation purposes",
+        default=4,  # one in every four batches will be used for eval
+        type=int,
+    )
+    parser.add_argument(
+        "--epochs", help="Number of epochs to train", default=1, type=int
+    )
+    parser.add_argument(
+        "--print_interval", help="Print loss during training", default=10, type=int
+    )
+    parser.add_argument(
+        "--cuda", help="Use cuda or not", action="store_true", default=False
+    )
+    parser.add_argument(
+        "--model_file",
+        help="File to load/save model parameters to continue training",
+        default=None,
+        type=str,
+    )
+    parser.add_argument(
+        "-e", help="Load and evaluate only", action="store_true", default=False
+    )
+
+    return parser.parse_args()

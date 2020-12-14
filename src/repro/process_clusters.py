@@ -1,48 +1,39 @@
 import argparse
 import pandas as pd
 from sklearn.cluster import KMeans
+from train_utils import read_data
 
 
-def fit_kmeans(data):
-    #clustering the data by the address
-    kmeans6 = KMeans(n_clusters = 6)
-    kmeans6.fit(data[["addr"]])
-    return kmeans6
+def fit_kmeans(data, num_clusters):
+    # clustering the data by the address
+    kmeans = KMeans(n_clusters=num_clusters)
+    kmeans.fit(data[["addr"]])
+    return kmeans
 
 
 def calc_deltas(input_data):
     output_data = pd.DataFrame()
-
     output_data["id"] = input_data["id"]
     output_data["pc"] = input_data["pc"]
     output_data["cluster"] = input_data["cluster"]
 
-    output_data["delta_out"] = (input_data["addr"] - input_data["addr"].shift(-1))
-    output_data["delta_in"] = output_data["delta_out"].shift(1)
+    deltas = (input_data["addr"].shift(-1)) - input_data["addr"]
+    output_data["delta_out"] = deltas
+    output_data["delta_in"] = deltas.shift(1)
     output_data = output_data.dropna()
 
+    output_data["delta_in"] = output_data["delta_in"].astype("int")
+    output_data["delta_out"] = output_data["delta_out"].astype("int")
     return output_data
 
 
-def read_data(infile, nrows, skip=None):
-    if skip == None:
-        data = pd.read_csv(infile, nrows=nrows)
-    else:
-        data = pd.read_csv(infile, nrows=nrows, skiprows=range(1, skip + 1))
-
-    convert_hex_to_dec = lambda x: int(x, 16)
-    data["pc"] = data["pc"].apply(convert_hex_to_dec)
-    data["addr"] = data["addr"].apply(convert_hex_to_dec)
-    return data
-
-
-def process_data(data, kmeans):
-    data["cluster"] = kmeans.predict(data[["addr"]])
+def process_data(data, kmeans, num_clusters):
     data["id"] = range(len(data))
+    data["cluster"] = kmeans.predict(data[["addr"]])
 
     cluster_dfs = [
-        calc_deltas(data[data.cluster == cluster_id]) 
-        for cluster_id in range(6)
+        calc_deltas(data[data.cluster == cluster_id])
+        for cluster_id in range(num_clusters)
     ]
 
     return pd.concat(cluster_dfs).sort_values(by=["id"]).drop(["id"], axis=1)
@@ -50,12 +41,21 @@ def process_data(data, kmeans):
 
 def main(args):
     # Only fit KMeans on the training data
-    train_data = read_data(args.infile, args.train_size)
-    kmeans = fit_kmeans(train_data)
+    data, train_data = read_data(
+        args.infile,
+        args.train_size,
+        args.val_size,
+        args.batch_size,
+        args.val_freq,
+        parse_hex=True,
+    )
 
-    all_data = read_data(args.infile, args.train_size + args.val_size)
-    df = process_data(all_data, kmeans)
-    df.to_csv(args.outfile, index=False)
+    # Only fit the KMeans estimator on the training dataset, but assign clusters
+    # to ALL data points
+    num_clusters = 6
+    kmeans = fit_kmeans(train_data, num_clusters)
+    clustered = process_data(data, kmeans, num_clusters)
+    clustered.to_csv(args.outfile, index=False)
 
 
 if __name__ == "__main__":
@@ -67,6 +67,15 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--val_size", help="Size of validation set", default=1500, type=int
+    )
+    parser.add_argument(
+        "--batch_size", help="Batch size for training", default=50, type=int
+    )
+    parser.add_argument(
+        "--val_freq",
+        help="Frequency to use batches for evaluation purposes",
+        default=4,  # one in every four batches will be used for eval
+        type=int,
     )
 
     args = parser.parse_args()

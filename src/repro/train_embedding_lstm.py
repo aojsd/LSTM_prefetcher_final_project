@@ -1,21 +1,11 @@
-import argparse
-import pandas as pd
 import torch
 from vocab import build_vocabs
 from embedding_lstm import EmbeddingLSTM
-from train_utils import train_net, eval_net
+from train_utils import train_net, eval_net, read_data, parse_args
 
 
 # Load data from input file
-def load_data(infile, nrows, vocabs, skip=None, batch_size=2):
-    # Same function is used to read training, validation, and test datasets,
-    # so we need to skip ahead in the file to avoid using the same data for
-    # training and testing.
-    if skip == None:
-        data = pd.read_csv(infile, nrows=nrows)
-    else:
-        data = pd.read_csv(infile, nrows=nrows, skiprows=range(1, skip + 1))
-
+def load_data(data, vocabs, batch_size=2):
     pc_vocab, delta_vocab, target_vocab = vocabs
 
     # Need to map PCs, input deltas, and output deltas to indices as inputs
@@ -26,8 +16,7 @@ def load_data(infile, nrows, vocabs, skip=None, batch_size=2):
 
     # Wrap tensors in a DataLoader object for convenience
     dataset = torch.utils.data.TensorDataset(pc, delta_in, targets)
-    data_iter = torch.utils.data.DataLoader(dataset, batch_size, shuffle=False)
-    return data_iter
+    return torch.utils.data.DataLoader(dataset, batch_size, shuffle=False)
 
 
 def main(args):
@@ -35,22 +24,13 @@ def main(args):
     torch.manual_seed(0)
 
     # Training and validation data setup
-    vocabs = build_vocabs(args.datafile, args.train_size)
-    
-    train_iter = load_data(
-        args.datafile, args.train_size, vocabs, batch_size=args.batch_size
+    data, train_data = read_data(
+        args.datafile, args.train_size, args.val_size, args.batch_size, args.val_freq
     )
 
-    eval_iter = load_data(
-        args.datafile,
-        args.val_size,
-        vocabs,
-        skip=args.train_size,
-        batch_size=args.val_size,
-    )
-
-    # Check for cuda usage
-    device = torch.device("cuda:0") if args.cuda else "cpu"
+    # Training and validation data setup (datafile is the processed version)
+    vocabs = build_vocabs(train_data)
+    batch_iter = load_data(data, vocabs, batch_size=args.batch_size)
 
     # Input/Output dimensions (add 1 for deltas that we're not training on)
     pc_vocab, delta_vocab, target_vocab = vocabs
@@ -83,13 +63,17 @@ def main(args):
     if args.model_file != None:
         model.load_state_dict(torch.load(args.model_file))
 
+    # Check for cuda usage
+    device = torch.device("cuda:0") if args.cuda else "cpu"
+
     # Train
     if not args.e:
         loss_list = train_net(
             model,
-            train_iter,
+            batch_iter,
             args.epochs,
             optimizer,
+            args.val_freq,
             device=device,
             print_interval=args.print_interval,
         )
@@ -98,8 +82,7 @@ def main(args):
     if args.e:
         model = model.to(device)
 
-    state = eval_net(model, train_iter, device=device)
-    state = eval_net(model, eval_iter, device=device, state=state)
+    eval_net(model, batch_iter, args.val_freq, device=device)
 
     # Save model parameters
     if args.model_file != None:
@@ -107,35 +90,4 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("datafile", help="Input data set to train/test on", type=str)
-    parser.add_argument(
-        "--train_size", help="Size of training set", default=5000, type=int
-    )
-    parser.add_argument(
-        "--batch_size", help="Batch size for training", default=50, type=int
-    )
-    parser.add_argument(
-        "--val_size", help="Size of training set", default=1500, type=int
-    )
-    parser.add_argument(
-        "--epochs", help="Number of epochs to train", default=1, type=int
-    )
-    parser.add_argument(
-        "--print_interval", help="Print loss during training", default=10, type=int
-    )
-    parser.add_argument(
-        "--cuda", help="Use cuda or not", action="store_true", default=False
-    )
-    parser.add_argument(
-        "--model_file",
-        help="File to load/save model parameters to continue training",
-        default=None,
-        type=str,
-    )
-    parser.add_argument(
-        "-e", help="Load and evaluate only", action="store_true", default=False
-    )
-
-    args = parser.parse_args()
-    main(args)
+    main(parse_args())
