@@ -50,6 +50,8 @@ class ClusteringLSTM(nn.Module):
         # Returns loss, lstm output, and lstm state
 
         pc, delta, clusters = X
+        batch_size = pc.shape[0]
+
         pc_embed = self.pc_embed(pc)
         delta_embed = self.delta_embed(delta)
         lstm_in = torch.cat([pc_embed, delta_embed], dim=-1)
@@ -63,22 +65,37 @@ class ClusteringLSTM(nn.Module):
         #  the deltas themselves and the values are their probabilities)
         lstm_out, state = self.lstm(lstm_in, lstm_state)
 
-        # Run the respective task depending on the cluster
-        loss = 0
-        outputs = []
+        # Create a mapping that tells us which input indices correspond to the 
+        # inputs of each cluster.
+        indices = [[] for _ in range(len(self.cluster_networks))]
 
-        for time_step, cluster, t in zip(lstm_out, clusters, target):
-            output = self.cluster_networks[cluster](time_step)
-            prob = F.log_softmax(output, dim=-1)
-            
+        for orig, cluster in enumerate(clusters):
+            indices[cluster.item()].append(orig)
+
+        loss = 0
+        outputs = torch.zeros(batch_size, self.num_pred, dtype=torch.long)
+
+        # Pick out the inputs corresponding to each cluster, and run *all* of
+        # those inputs through the task-specific network at once.
+        for cluster, network in enumerate(self.cluster_networks):
+            orig_indices = indices[cluster]
+
+            # If there are no inputs corresponding to this cluster in the
+            # batch, just skip it to avoid errors computing loss.
+            if len(orig_indices) == 0:
+                continue
+
+            inputs = lstm_out[orig_indices]
+            output = network(inputs)
+            probabilities = F.log_softmax(output, dim=-1).squeeze(dim=1)
+
             if target is not None:
                 # Cross entropy loss (log softmax part was already performed)
-                loss += F.nll_loss(prob, torch.tensor([t]))
-            
-            _, preds = torch.topk(prob, self.num_pred, sorted=False)
-            outputs.append(preds)
+                loss += F.nll_loss(probabilities, target[orig_indices])
 
-        outputs = torch.cat(outputs, dim=0)
+            _, preds = torch.topk(probabilities, self.num_pred, sorted=False)
+            outputs[orig_indices] = preds
+
         return loss, outputs, state
 
     def predict(self, X, lstm_state):
@@ -93,9 +110,9 @@ def test_net():
     clusters = torch.arange(2, 6)  # [2, 3, 4, 5]
     target = torch.arange(0, 4)
 
-    net = ClusteringLSTM(4, 4, 4, 10, 30, num_pred=2)
+    net = ClusteringLSTM(4, 4, [4] * 6, 10, 30, num_pred=2)
 
-    print("Testing forward pass of embedding LSTM")
+    print("Testing forward pass of clustering LSTM")
     loss, preds, state = net((pc, delta, clusters), None, target)
     loss, preds, state = net((pc, delta, clusters), state, target)
 
@@ -104,7 +121,7 @@ def test_net():
     print(state[0].shape)  # hidden state
     print(state[1].shape)  # cell state
 
-    print("\nTesting prediction of embedding LSTM")
+    print("\nTesting prediction of clustering LSTM")
     preds, state = net.predict((pc, delta, clusters), None)
     preds, state = net.predict((pc, delta, clusters), state)
 
