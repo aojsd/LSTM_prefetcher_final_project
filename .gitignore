@@ -7,5 +7,6 @@ benchmark_programs
 data/raw
 data/processing
 data/*whole.csv
+*.csv
 
 .vscode/
