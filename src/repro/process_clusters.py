@@ -22,8 +22,8 @@ def calc_deltas(input_data):
     output_data["delta_in"] = deltas.shift(1)
     output_data = output_data.dropna()
 
-    output_data["delta_in"] = output_data["delta_in"].astype("int")
-    output_data["delta_out"] = output_data["delta_out"].astype("int")
+    output_data["delta_in"] = output_data["delta_in"].astype("long")
+    output_data["delta_out"] = output_data["delta_out"].astype("long")
     return output_data
 
 
