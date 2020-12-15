@@ -1,5 +1,11 @@
 *pycache*
-benchmark_programs
-data/processing
 *.pkl
+Pipfile*
+
+benchmark_programs
+
+data/raw
+data/processing
 data/*whole.csv
+
+.vscode/
