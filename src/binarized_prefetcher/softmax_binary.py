@@ -33,17 +33,7 @@ class MultibitSoftmax(nn.Module):
         self.splits = splits
         self.len_split = int(num_bits/splits)
         self.CE = nn.CrossEntropyLoss()
-
         weights = torch.ones(1 << self.len_split)
-        self.w = 0.1
-        if self.len_split >= 7:
-            weights[64] *= self.w
-            weights[128] *= self.w
-        self.w_mat = torch.ones((1<<self.len_split, 2*self.splits))
-        self.w_mat[64,1] *= self.w
-        self.w_mat[128,1] *= self.w
-        # self.register_buffer('weight_mat', self.w_mat)
-        self.weight_CE = nn.CrossEntropyLoss(weights)
 
     def forward(self, X, target):
         # X holds inputs of shape (N, 2 * splits * (2^len_split))
@@ -210,17 +200,57 @@ def MESoft_acc(preds, target, splits, len_split, num_blocks=2, device='cpu'):
     eq = torch.bitwise_and(upper, lower)
 
     acc = eq.sum() / eq.shape[0]
-    n64 = pred_delta.eq(64).sum()
-    n128 = pred_delta.eq(128).sum()
-    return acc.item(), n64.item(), n128.item()
+    return acc.item()
+
+def MESoft_eval(net, data_iter, device='cpu', val_freq=4):
+    # Evaluate training and val accuracy
+    net.eval()
+    state = None
+    train_acc2_list = []
+    val_acc2_list = []
+    train_acc10_list = []
+    val_acc10_list = []
+    pred64 = 0
+    pred128 = 0
+    for i, data in enumerate(data_iter):
+        data = [ds.to(device) for ds in data]
+        X = data[:-1]
+        target = data[-1]
+        preds, state = net.predict(X, state)
+
+        # Detach to save memory
+        preds = preds.detach()
+        state = tuple([s.detach() for s in list(state)])
+
+        # Calculate accuracy
+        acc_2 = MESoft_acc(preds, target, net.splits, net.len_split, device=device)
+        acc_10 = MESoft_acc(preds, target, net.splits, net.len_split, num_blocks=10,
+                            device=device)
+
+        # Check if its for train or val acc
+        if (i+1) % val_freq != 0:
+            train_acc2_list.append(acc_2)
+            train_acc10_list.append(acc_10)
+        else:
+            val_acc2_list.append(acc_2)
+            val_acc10_list.append(acc_10)
+
+    # Calculate overall accuracy
+    train_acc2 = torch.tensor(train_acc2_list).mean()
+    train_acc10 = torch.tensor(train_acc10_list).mean()
+    val_acc2 = torch.tensor(val_acc2_list).mean()
+    val_acc10 = torch.tensor(val_acc10_list).mean()
+
+    return train_acc2, train_acc10, val_acc2, val_acc10
 
 def MESoft_train_eval(net, data_iter, epochs, optimizer, device='cpu', scheduler=None,
-                    print_interval=10, val_freq=4, e_start=0, eval_only=False):
+                    print_interval=10, val_freq=4, e_start=0, eval_only=False, ev_always=False):
     loss_list = []
+    val_list = []
     if not eval_only:
-        net.train()
         print("Train Start:")
         for e in range(epochs):
+            net.train()
             state = None
             epoch_loss = []
             for i, data in enumerate(data_iter):
@@ -243,55 +273,20 @@ def MESoft_train_eval(net, data_iter, epochs, optimizer, device='cpu', scheduler
                 scheduler.step()
             
             loss = torch.Tensor(epoch_loss).mean()
-            loss_list.append(loss)
+            loss_list.append(loss.item())
             if (e+1) % print_interval == 0:
-                print(f"\tEpoch {e+1 + e_start}\tLoss:\t{loss:.8f}")
+                print(f"Epoch {e+1 + e_start}\tLoss:\t{loss:.8f}")
 
-    # Evaluate training and val accuracy
-    print("Eval Start")
-    net.eval()
-    state = None
-    train_acc2_list = []
-    val_acc2_list = []
-    train_acc10_list = []
-    val_acc10_list = []
-    pred64 = 0
-    pred128 = 0
-    for i, data in enumerate(data_iter):
-        data = [ds.to(device) for ds in data]
-        X = data[:-1]
-        target = data[-1]
-        preds, state = net.predict(X, state)
+            if ev_always:
+                tup = MESoft_eval(net, data_iter, device=device, val_freq=val_freq)
+                train_acc2, train_acc10, val_acc2, val_acc10 = tup
+                val_list.append(val_acc10.item())
 
-        # Detach to save memory
-        preds = preds.detach()
-        state = tuple([s.detach() for s in list(state)])
+    if not ev_always:
+        tup = MESoft_eval(net, data_iter, device=device, val_freq=val_freq)
+        train_acc2, train_acc10, val_acc2, val_acc10 = tup
 
-        # Calculate accuracy
-        acc_2, n64, n128 = MESoft_acc(preds, target, net.splits, net.len_split, device=device)
-        acc_10, _, _ = MESoft_acc(preds, target, net.splits, net.len_split, num_blocks=10,
-                            device=device)
-        pred64 += n64
-        pred128 += n128
-
-        # Check if its for train or val acc
-        if (i+1) % val_freq != 0:
-            train_acc2_list.append(acc_2)
-            train_acc10_list.append(acc_10)
-        else:
-            val_acc2_list.append(acc_2)
-            val_acc10_list.append(acc_10)
-
-    # Calculate overall accuracy
-    train_acc2 = torch.tensor(train_acc2_list).mean()
-    train_acc10 = torch.tensor(train_acc10_list).mean()
-    val_acc2 = torch.tensor(val_acc2_list).mean()
-    val_acc10 = torch.tensor(val_acc10_list).mean()
-
-    print("Predicted 64: {}".format(pred64))
-    print("Predicted 128: {}".format(pred128))
-
-    return loss_list, train_acc2, train_acc10, val_acc2, val_acc10
+    return loss_list, val_list, train_acc2, train_acc10, val_acc2, val_acc10
 
 def main(argv):
     # Reproducibility
@@ -328,8 +323,8 @@ def main(argv):
     lr = args.lr
     optimizer = torch.optim.Adam(net.parameters(), lr=lr)
     # optimizer = torch.optim.Adagrad(net.parameters(), lr=lr, weight_decay=0.1)
-    scheduler = None
-    # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 20, gamma=0.1)
+    # scheduler = None
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 25, gamma=0.32)
 
     # Check for model file
     if args.model_file != None:
@@ -344,10 +339,11 @@ def main(argv):
     val_freq = args.val_freq
     print_in = args.print
     e_start = args.init_epochs
+    ev_always = args.trend_file != None
     tup = MESoft_train_eval(net, data_iter, epochs, optimizer, device=device, scheduler=scheduler,
                             print_interval=print_in, val_freq=val_freq, e_start = e_start,
-                            eval_only=args.e)
-    loss_list, acc2_t, acc10_t, acc2_v, acc10_v = tup
+                            eval_only=args.e, ev_always=ev_always)
+    loss_list, val_list, acc2_t, acc10_t, acc2_v, acc10_v = tup
 
     print("Train Accuracy at 2:\t{:.6f}".format(acc2_t))
     print("Val Accuracy at 2:\t{:.6f}".format(acc2_v))
@@ -358,6 +354,11 @@ def main(argv):
     # Save model parameters
     if args.model_file != None:
         torch.save(net.cpu().state_dict(), args.model_file)
+
+    # Save training trends
+    trends = pd.DataFrame(zip(loss_list, val_list), columns=['loss', 'val'])
+    if args.trend_file != None:
+        trends.to_csv(args.trend_file, index=False)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -370,6 +371,7 @@ if __name__ == "__main__":
     parser.add_argument("--print", help="Print loss during training", default=10, type=int)
     parser.add_argument("--cuda", help="Use cuda or not", action="store_true", default=False)
     parser.add_argument("--model_file", help="File to load/save model parameters to continue training", default=None, type=str)
+    parser.add_argument("--trend_file", help="File to save trends and results", default=None, type=str)
     parser.add_argument("--lr", help="Initial learning rate", default=1e-4, type=float)
     parser.add_argument("-e", help="Load and evaluate only", action="store_true", default=False)
 
