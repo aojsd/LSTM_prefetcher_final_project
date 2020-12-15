@@ -7,24 +7,32 @@ import torch.nn as nn
 import bits_module as bits
 import training as T
 
-def bit_split(X, splits, len_split, signed=True):
-    # Separate splits in input based on bitwise values
-    # Output will have shape (N, 2*splits) if signed, else (N, splits)
-    #   Lower order bits will have lower index in the splits dimension
-    #   Output has a positive and negative section, if original is positive,
-    #   the negative section will be all zeroes, and vice versa
-    T = []
-    signs = torch.ge(X, 0).byte().unsqueeze(-1)
-    X = torch.abs(X)
-    mask = (1 << len_split) - 1
-    for i in range(splits):
-        t_c = torch.bitwise_and(X, mask)
-        T.append(t_c.unsqueeze(1))
-        X >>= len_split
-    out = torch.cat(T, dim=1)
-    if signed:
-        out = torch.cat([out * signs, out * (1-signs)], dim=1)
-    return out
+class BitSplit(nn.Module):
+    def __init__(self, num_bits, splits, len_split, signed=True):
+        super(BitSplit, self).__init__()
+        self.len_split = len_split
+        self.signed = signed
+        
+        split_mask = torch.tensor((1 << len_split) - 1)
+        exp = torch.tensor([i*len_split for i in range(splits)])
+        mask = split_mask << exp
+
+        self.register_buffer('exp', exp)
+        self.register_buffer('mask', mask)
+
+    def forward(self, X):
+        # Separate splits in input based on bitwise values
+        # Output will have shape (N, 2*splits) if signed, else (N, splits)
+        #   Lower order bits will have lower index in the splits dimension
+        #   Output has a positive and negative section, if original is positive,
+        #   the negative section will be all zeroes, and vice versa
+        signs = torch.ge(X, 0).byte().unsqueeze(-1)
+        X = torch.abs(X)
+        out = X.unsqueeze(-1).bitwise_and(self.mask)
+        out >>= self.exp
+        if self.signed:
+            out = torch.cat([out * signs, out * (1-signs)], dim=-1)
+        return out
 
 class MultibitSoftmax(nn.Module):
     def __init__(self, num_bits, splits):
@@ -34,6 +42,7 @@ class MultibitSoftmax(nn.Module):
         self.len_split = int(num_bits/splits)
         self.CE = nn.CrossEntropyLoss()
         weights = torch.ones(1 << self.len_split)
+        self.bit_split = BitSplit(num_bits, splits, self.len_split)
 
     def forward(self, X, target):
         # X holds inputs of shape (N, 2 * splits * (2^len_split))
@@ -49,7 +58,7 @@ class MultibitSoftmax(nn.Module):
         # Separate splits in target based on bitwise values
         # ce_target will have shape (N, 2*splits)
         # Lower order bits will have lower index in the splits dimension
-        ce_target = bit_split(target, self.splits, self.len_split)
+        ce_target = self.bit_split(target)
 
         # Calculate multi-dimensional cross-entropy loss and class predictions
         loss = self.CE(ce_in, ce_target)
@@ -71,6 +80,7 @@ class BitsplitEmbedding(nn.Module):
         self.len_split = int(num_bits/splits)
         self.split_embed = int(embedding_dim/splits)
         self.signed = signed
+        self.bit_split = BitSplit(num_bits, splits, self.len_split, signed=signed)
 
         num_embedding = 1 << self.len_split
         if signed:
@@ -90,7 +100,7 @@ class BitsplitEmbedding(nn.Module):
         N = X.shape[0]
 
         # Separate splits in X based on bitwise values
-        X = bit_split(X, self.splits, self.len_split, self.signed)
+        X = self.bit_split(X)
 
         # Perform multiple embeddings for each row in the batch
         embed_list = []
@@ -192,7 +202,7 @@ def MESoft_acc(preds, target, splits, len_split, num_blocks=2, device='cpu'):
     for i in range(splits):
         pos += coef * preds[:, i]
         neg -= coef * preds[:, i + splits]
-        coef <<= splits
+        coef <<= len_split
     pred_delta = pos * signs + neg * (1 - signs)
     diff = pred_delta - target
     upper = diff.lt(64 * num_blocks/2)
@@ -323,7 +333,7 @@ def main(argv):
     lr = args.lr
     optimizer = torch.optim.Adam(net.parameters(), lr=lr)
     # optimizer = torch.optim.Adagrad(net.parameters(), lr=lr, weight_decay=0.1)
-    # scheduler = None
+    scheduler = None
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 25, gamma=0.32)
 
     # Check for model file
@@ -368,7 +378,7 @@ if __name__ == "__main__":
     parser.add_argument("--val_freq", help="Freq for Val interleaving", default=4, type=int)
     parser.add_argument("--epochs", help="Number of epochs to train", default=10, type=int)
     parser.add_argument("--init_epochs", help="Number of epochs to pretrained", default=0, type=int)
-    parser.add_argument("--print", help="Print loss during training", default=10, type=int)
+    parser.add_argument("--print", help="Print loss during training", default=1, type=int)
     parser.add_argument("--cuda", help="Use cuda or not", action="store_true", default=False)
     parser.add_argument("--model_file", help="File to load/save model parameters to continue training", default=None, type=str)
     parser.add_argument("--trend_file", help="File to save trends and results", default=None, type=str)
