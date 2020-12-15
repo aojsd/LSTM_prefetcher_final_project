@@ -73,7 +73,7 @@ class ClusteringLSTM(nn.Module):
             indices[cluster.item()].append(orig)
 
         loss = 0
-        outputs = torch.zeros(batch_size, self.num_pred, dtype=torch.long)
+        outputs = torch.zeros(batch_size, self.num_pred, dtype=torch.long, device=target.device)
 
         # Pick out the inputs corresponding to each cluster, and run *all* of
         # those inputs through the task-specific network at once.
