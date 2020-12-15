@@ -63,20 +63,21 @@ def train_net(
     return loss_list
 
 
-def prob_acc(pred, target):
+def prob_acc(pred, target, target_vocab):
     # pred shape: (N, K = 10)
     # target: (N, 1)
     num_correct = 0
 
     for expected_delta, predictions in zip(target, pred):
-        if expected_delta in predictions:
+        if (expected_delta.item() in target_vocab.val_to_key 
+                and expected_delta in predictions):
             num_correct += 1
 
     return num_correct / len(target)
 
 
 # Evaluate the network on a labeled dataset
-def eval_net(net, batch_iter, val_freq, device="cpu", state=None):
+def eval_net(net, batch_iter, val_freq, target_vocab, device="cpu", state=None):
     net.eval()
     train_acc_list = []
     eval_acc_list = []
@@ -87,7 +88,7 @@ def eval_net(net, batch_iter, val_freq, device="cpu", state=None):
         target = data[-1]
 
         preds, state = net.predict(X, state)
-        acc = prob_acc(preds.cpu(), target.cpu())
+        acc = prob_acc(preds.cpu(), target.cpu(), target_vocab)
 
         # Interleave training and validation
         if (i + 1) % val_freq != 0:
@@ -119,6 +120,9 @@ def parse_args():
     )
     parser.add_argument(
         "--epochs", help="Number of epochs to train", default=1, type=int
+    )
+    parser.add_argument(
+        "--lr", help="Learning rate", default=1e-3, type=float
     )
     parser.add_argument(
         "--print_interval", help="Print loss during training", default=10, type=int
