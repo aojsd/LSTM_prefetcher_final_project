@@ -45,7 +45,7 @@ def main(args):
     hidden_dim = 256
     num_layers = 2
     dropout = 0.1
-    lr = 1e-3
+    lr = args.lr
 
     model = EmbeddingLSTM(
         num_pc,
@@ -84,11 +84,12 @@ def main(args):
         )
 
         if args.model_file != None:
+            print("Saving model to file: {}".format(args.model_file))
             torch.save(model.cpu().state_dict(), args.model_file)
     else:
         # Only evaluate the model
         model = model.to(device)
-        eval_net(model, batch_iter, args.val_freq, device=device)
+        eval_net(model, batch_iter, args.val_freq, target_vocab, device=device)
 
 
 if __name__ == "__main__":

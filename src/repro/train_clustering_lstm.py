@@ -8,12 +8,13 @@ from train_utils import train_net, eval_net, read_data, parse_args
 # Load data from input file
 def load_data(data, vocabs, batch_size=2):
     pc_vocab, delta_vocab, target_vocab = vocabs
+    get_delta_out = lambda x: target_vocab[x["cluster"]].get_val(x["delta_out"])
 
     # Convert data to PyTorch tensors
     pc = torch.tensor(data["pc"].map(pc_vocab.get_val).to_numpy())
     delta_in = torch.tensor(data["delta_in"].map(delta_vocab.get_val).to_numpy())
     clusters = torch.tensor(data["cluster"].to_numpy())
-    targets = torch.tensor(data["delta_out"].map(target_vocab.get_val).to_numpy())
+    targets = torch.tensor(data.apply(get_delta_out, axis=1).to_numpy())
 
     # Wrap tensors in a DataLoader object for convenience
     dataset = torch.utils.data.TensorDataset(pc, delta_in, clusters, targets)
@@ -36,7 +37,7 @@ def main(args):
     pc_vocab, delta_vocab, target_vocab = vocabs
     num_pc = len(pc_vocab) + 1
     num_input_delta = len(delta_vocab) + 1
-    num_output_delta = len(target_vocab) + 1
+    num_output_delta = [len(vocab) + 1 for vocab in target_vocab]
 
     # Tunable hyperparameters
     num_pred = 10
@@ -52,7 +53,6 @@ def main(args):
         num_output_delta,
         embed_dim,
         hidden_dim,
-        num_clusters=6,
         num_pred=num_pred,
         num_layers=num_layers,
         dropout=dropout,

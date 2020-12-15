@@ -11,7 +11,6 @@ class ClusteringLSTM(nn.Module):
         num_output_delta,
         embed_dim,
         hidden_dim,
-        num_clusters=6,
         num_pred=10,  # how many predictions to return
         num_layers=2,  # number of LSTM layers
         dropout=0,  # probability with which to apply dropout
@@ -29,12 +28,15 @@ class ClusteringLSTM(nn.Module):
             dropout=dropout,
         )
 
-        self.cluster_networks = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(hidden_dim, num_output_delta, dropout=dropout),
-            )
-            for _ in range(num_clusters)
-        ])
+        self.cluster_networks = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(hidden_dim, num_outputs), 
+                    nn.Dropout(p=dropout)
+                )
+                for num_outputs in num_output_delta
+            ]
+        )
 
         # Although the paper doesn't mention it, the output from the LSTM needs
         # to be converted to probabilities over the possible deltas.
@@ -48,6 +50,8 @@ class ClusteringLSTM(nn.Module):
         # Returns loss, lstm output, and lstm state
 
         pc, delta, clusters = X
+        batch_size = pc.shape[0]
+
         pc_embed = self.pc_embed(pc)
         delta_embed = self.delta_embed(delta)
         lstm_in = torch.cat([pc_embed, delta_embed], dim=-1)
@@ -61,20 +65,38 @@ class ClusteringLSTM(nn.Module):
         #  the deltas themselves and the values are their probabilities)
         lstm_out, state = self.lstm(lstm_in, lstm_state)
 
-        # Run the respective task depending on the cluster
-        outputs = []
+        # Create a mapping that tells us which input indices correspond to the 
+        # inputs of each cluster.
+        indices = [[] for _ in range(len(self.cluster_networks))]
 
-        for time_step, cluster in zip(lstm_out, clusters):
-            output = self.cluster_networks[cluster](time_step)
-            outputs.append(output)
+        for orig, cluster in enumerate(clusters):
+            indices[cluster.item()].append(orig)
 
-        outputs = torch.cat(outputs, dim=0)
-        delta_probabilities = F.log_softmax(outputs, dim=-1)
-        _, preds = torch.topk(delta_probabilities, self.num_pred, sorted=False)
+        loss = 0
+        outputs = torch.zeros(batch_size, self.num_pred, dtype=torch.long, device=target.device)
 
-        # Cross entropy loss (log softmax part was already performed)
-        loss = F.nll_loss(delta_probabilities, target) if target is not None else None
-        return loss, preds, state
+        # Pick out the inputs corresponding to each cluster, and run *all* of
+        # those inputs through the task-specific network at once.
+        for cluster, network in enumerate(self.cluster_networks):
+            orig_indices = indices[cluster]
+
+            # If there are no inputs corresponding to this cluster in the
+            # batch, just skip it to avoid errors computing loss.
+            if len(orig_indices) == 0:
+                continue
+
+            inputs = lstm_out[orig_indices]
+            output = network(inputs)
+            probabilities = F.log_softmax(output, dim=-1).squeeze(dim=1)
+
+            if target is not None:
+                # Cross entropy loss (log softmax part was already performed)
+                loss += F.nll_loss(probabilities, target[orig_indices])
+
+            _, preds = torch.topk(probabilities, self.num_pred, sorted=False)
+            outputs[orig_indices] = preds
+
+        return loss, outputs, state
 
     def predict(self, X, lstm_state):
         with torch.no_grad():
@@ -88,9 +110,9 @@ def test_net():
     clusters = torch.arange(2, 6)  # [2, 3, 4, 5]
     target = torch.arange(0, 4)
 
-    net = ClusteringLSTM(4, 4, 4, 10, 30, num_pred=2)
+    net = ClusteringLSTM(4, 4, [4] * 6, 10, 30, num_pred=2)
 
-    print("Testing forward pass of embedding LSTM")
+    print("Testing forward pass of clustering LSTM")
     loss, preds, state = net((pc, delta, clusters), None, target)
     loss, preds, state = net((pc, delta, clusters), state, target)
 
@@ -99,7 +121,7 @@ def test_net():
     print(state[0].shape)  # hidden state
     print(state[1].shape)  # cell state
 
-    print("\nTesting prediction of embedding LSTM")
+    print("\nTesting prediction of clustering LSTM")
     preds, state = net.predict((pc, delta, clusters), None)
     preds, state = net.predict((pc, delta, clusters), state)
 
@@ -110,5 +132,3 @@ def test_net():
 
 if __name__ == "__main__":
     test_net()
-
-

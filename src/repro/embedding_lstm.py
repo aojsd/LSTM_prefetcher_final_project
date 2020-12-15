@@ -30,7 +30,8 @@ class EmbeddingLSTM(nn.Module):
 
         # Although the paper doesn't mention it, the output from the LSTM needs
         # to be converted to probabilities over the possible deltas.
-        self.fc = nn.Linear(hidden_dim, num_output_delta, dropout=dropout)
+        self.fc = nn.Linear(hidden_dim, num_output_delta)
+        self.dropout = nn.Dropout(p=dropout)
         self.num_pred = num_pred
 
     def forward(self, X, lstm_state, target=None):
@@ -53,8 +54,10 @@ class EmbeddingLSTM(nn.Module):
         # (`topk` returns tuple of values and indices, the indices represent
         #  the deltas themselves and the values are their probabilities)
         lstm_out, state = self.lstm(lstm_in, lstm_state)
-        delta_probabilities = F.log_softmax(self.fc(lstm_out), dim=-1)
-        delta_probabilities = delta_probabilities.squeeze(dim=1)  # remove `batch` dim
+        outputs = self.dropout(self.fc(lstm_out))
+
+        # Squeeze to remove `batch` dim
+        delta_probabilities = F.log_softmax(outputs, dim=-1).squeeze(dim=1)
         _, preds = torch.topk(delta_probabilities, self.num_pred, sorted=False)
 
         # Cross entropy loss (log softmax part was already performed)
