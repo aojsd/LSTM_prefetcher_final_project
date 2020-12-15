@@ -11,7 +11,6 @@ class ClusteringLSTM(nn.Module):
         num_output_delta,
         embed_dim,
         hidden_dim,
-        num_clusters=6,
         num_pred=10,  # how many predictions to return
         num_layers=2,  # number of LSTM layers
         dropout=0,  # probability with which to apply dropout
@@ -29,12 +28,15 @@ class ClusteringLSTM(nn.Module):
             dropout=dropout,
         )
 
-        self.cluster_networks = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(hidden_dim, num_output_delta, dropout=dropout),
-            )
-            for _ in range(num_clusters)
-        ])
+        self.cluster_networks = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(hidden_dim, num_outputs), 
+                    nn.Dropout(p=dropout)
+                )
+                for num_outputs in num_output_delta
+            ]
+        )
 
         # Although the paper doesn't mention it, the output from the LSTM needs
         # to be converted to probabilities over the possible deltas.
@@ -62,19 +64,22 @@ class ClusteringLSTM(nn.Module):
         lstm_out, state = self.lstm(lstm_in, lstm_state)
 
         # Run the respective task depending on the cluster
+        loss = 0
         outputs = []
 
-        for time_step, cluster in zip(lstm_out, clusters):
+        for time_step, cluster, t in zip(lstm_out, clusters, target):
             output = self.cluster_networks[cluster](time_step)
-            outputs.append(output)
+            prob = F.log_softmax(output, dim=-1)
+            
+            if target is not None:
+                # Cross entropy loss (log softmax part was already performed)
+                loss += F.nll_loss(prob, torch.tensor([t]))
+            
+            _, preds = torch.topk(prob, self.num_pred, sorted=False)
+            outputs.append(preds)
 
         outputs = torch.cat(outputs, dim=0)
-        delta_probabilities = F.log_softmax(outputs, dim=-1)
-        _, preds = torch.topk(delta_probabilities, self.num_pred, sorted=False)
-
-        # Cross entropy loss (log softmax part was already performed)
-        loss = F.nll_loss(delta_probabilities, target) if target is not None else None
-        return loss, preds, state
+        return loss, outputs, state
 
     def predict(self, X, lstm_state):
         with torch.no_grad():
@@ -110,5 +115,3 @@ def test_net():
 
 if __name__ == "__main__":
     test_net()
-
-

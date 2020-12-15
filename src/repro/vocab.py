@@ -13,11 +13,11 @@ class Vocab:
 
     def __len__(self):
         return self.counter
-        
+
     def get_val(self, key):
         # Return -1 by default to treat pruned out deltas as unknown
         # Assumption: all the keys remain the same, so we can use
-        # `self.counter` as a dummy value (kind of like [unk] in 
+        # `self.counter` as a dummy value (kind of like [unk] in
         # neural translation models).
         return self.key_to_val.get(key, self.counter)
 
@@ -31,7 +31,16 @@ class Vocab:
             self.counter += 1
 
 
-def build_vocabs(data, num_output_deltas=50000):
+def make_output_vocab(delta_out, num_output_deltas=50000):
+    return Vocab(
+        delta_out.value_counts()
+        .nlargest(num_output_deltas)  # Limit to 50,000 most common
+        .keys()
+        .tolist()
+    )
+
+
+def build_vocabs(data, num_clusters=6):
     """
     Reads the entire CSV and figures out:
         - The number of PCs
@@ -49,12 +58,13 @@ def build_vocabs(data, num_output_deltas=50000):
         .tolist()
     )
 
-    target_vocab = Vocab(
-        data["delta_out"]
-        .value_counts()
-        .nlargest(num_output_deltas)  # Limit to 50,000 most common
-        .keys()
-        .tolist()
+    target_vocab = (
+        [
+            make_output_vocab(data.loc[data.cluster == cluster, "delta_out"])
+            for cluster in range(num_clusters)
+        ]
+        if "cluster" in data
+        else make_output_vocab(data["delta_out"])
     )
 
     return pc_vocab, delta_vocab, target_vocab
