@@ -31,7 +31,7 @@ class Vocab:
             self.counter += 1
 
 
-def make_output_vocab(delta_out, num_output_deltas=50000):
+def make_output_vocab(delta_out, num_output_deltas):
     return Vocab(
         delta_out.value_counts()
         .nlargest(num_output_deltas)  # Limit to 50,000 most common
@@ -40,7 +40,7 @@ def make_output_vocab(delta_out, num_output_deltas=50000):
     )
 
 
-def build_vocabs(data, num_clusters=6):
+def build_vocabs(data, num_clusters=6, num_output_deltas=50000):
     """
     Reads the entire CSV and figures out:
         - The number of PCs
@@ -60,11 +60,14 @@ def build_vocabs(data, num_clusters=6):
 
     target_vocab = (
         [
-            make_output_vocab(data.loc[data.cluster == cluster, "delta_out"])
+            make_output_vocab(
+                data.loc[data.cluster == cluster, "delta_out"],
+                num_output_deltas
+            )
             for cluster in range(num_clusters)
         ]
         if "cluster" in data
-        else make_output_vocab(data["delta_out"])
+        else make_output_vocab(data["delta_out"], num_output_deltas)
     )
 
     return pc_vocab, delta_vocab, target_vocab

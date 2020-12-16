@@ -8,13 +8,20 @@ from train_utils import train_net, eval_net, read_data, parse_args
 # Load data from input file
 def load_data(data, vocabs, batch_size=2):
     pc_vocab, delta_vocab, target_vocab = vocabs
-    get_delta_out = lambda x: target_vocab[x["cluster"]].get_val(x["delta_out"])
 
     # Convert data to PyTorch tensors
     pc = torch.tensor(data["pc"].map(pc_vocab.get_val).to_numpy())
     delta_in = torch.tensor(data["delta_in"].map(delta_vocab.get_val).to_numpy())
     clusters = torch.tensor(data["cluster"].to_numpy())
-    targets = torch.tensor(data.apply(get_delta_out, axis=1).to_numpy())
+
+    # Map targets for each cluster independently to improve parallelization
+    for cluster in range(len(target_vocab)):
+        data.loc[data.cluster == cluster, "delta_out"] = (
+            data.loc[data.cluster == cluster, "delta_out"]
+            .map(target_vocab[cluster].get_val)
+        )
+
+    targets = torch.tensor(data["delta_out"].to_numpy())
 
     # Wrap tensors in a DataLoader object for convenience
     dataset = torch.utils.data.TensorDataset(pc, delta_in, clusters, targets)
@@ -30,7 +37,7 @@ def main(args):
     )
 
     # Training and validation data setup (datafile is the processed version)
-    vocabs = build_vocabs(train_data)
+    vocabs = build_vocabs(train_data, num_output_deltas=20000)
     batch_iter = load_data(data, vocabs, batch_size=args.batch_size)
 
     # Input/Output dimensions (add 1 for deltas that we're not training on)
@@ -86,7 +93,7 @@ def main(args):
             torch.save(model.cpu().state_dict(), args.model_file)
     else:
         model = model.to(device)
-        eval_net(model, batch_iter, args.val_freq, device=device)
+        eval_net(model, batch_iter, args.val_freq, target_vocab, device=device)
 
 
 if __name__ == "__main__":
