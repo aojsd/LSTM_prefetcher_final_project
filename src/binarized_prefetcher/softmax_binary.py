@@ -7,6 +7,25 @@ import torch.nn as nn
 import bits_module as bits
 import training as T
 
+def bit_split(X, splits, len_split, signed=True):
+    # Separate splits in input based on bitwise values
+    # Output will have shape (N, 2*splits) if signed, else (N, splits)
+    #   Lower order bits will have lower index in the splits dimension
+    #   Output has a positive and negative section, if original is positive,
+    #   the negative section will be all zeroes, and vice versa
+    T = []
+    signs = torch.ge(X, 0).byte().unsqueeze(-1)
+    X = torch.abs(X)
+    mask = (1 << len_split) - 1
+    for i in range(splits):
+        t_c = torch.bitwise_and(X, mask)
+        T.append(t_c.unsqueeze(1))
+        X >>= len_split
+    out = torch.cat(T, dim=1)
+    if signed:
+        out = torch.cat([out * signs, out * (1-signs)], dim=1)
+    return out
+
 class BitSplit(nn.Module):
     def __init__(self, num_bits, splits, len_split, signed=True):
         super(BitSplit, self).__init__()
@@ -41,8 +60,10 @@ class MultibitSoftmax(nn.Module):
         self.splits = splits
         self.len_split = int(num_bits/splits)
         self.CE = nn.CrossEntropyLoss()
+        
+        # self.bit_split = BitSplit(num_bits, splits, self.len_split)
         weights = torch.ones(1 << self.len_split)
-        self.bit_split = BitSplit(num_bits, splits, self.len_split)
+        self.weight_CE = nn.CrossEntropyLoss(weights)
 
     def forward(self, X, target):
         # X holds inputs of shape (N, 2 * splits * (2^len_split))
@@ -58,7 +79,8 @@ class MultibitSoftmax(nn.Module):
         # Separate splits in target based on bitwise values
         # ce_target will have shape (N, 2*splits)
         # Lower order bits will have lower index in the splits dimension
-        ce_target = self.bit_split(target)
+        ce_target = bit_split(target, self.splits, self.len_split)
+        # ce_target = self.bit_split(target)
 
         # Calculate multi-dimensional cross-entropy loss and class predictions
         loss = self.CE(ce_in, ce_target)
@@ -80,7 +102,7 @@ class BitsplitEmbedding(nn.Module):
         self.len_split = int(num_bits/splits)
         self.split_embed = int(embedding_dim/splits)
         self.signed = signed
-        self.bit_split = BitSplit(num_bits, splits, self.len_split, signed=signed)
+        # self.bit_split = BitSplit(num_bits, splits, self.len_split, signed=signed)
 
         num_embedding = 1 << self.len_split
         if signed:
@@ -100,7 +122,8 @@ class BitsplitEmbedding(nn.Module):
         N = X.shape[0]
 
         # Separate splits in X based on bitwise values
-        X = self.bit_split(X)
+        X = bit_split(X, self.splits, self.len_split)
+        # X = self.bit_split(X)
 
         # Perform multiple embeddings for each row in the batch
         embed_list = []
@@ -212,13 +235,35 @@ def MESoft_acc(preds, target, splits, len_split, num_blocks=2, device='cpu'):
     acc = eq.sum() / eq.shape[0]
     return acc.item()
 
+def exact_block_acc(preds, target, splits, len_split, device='cpu'):
+    pos = torch.zeros_like(target, device=device)
+    neg = torch.zeros_like(target, device=device)
+    pred_delta = torch.zeros_like(target, device=device)
+
+    coef = torch.tensor(1, device=device)
+    signs = preds[:, -1]
+
+    for i in range(splits):
+        pos += coef * preds[:, i]
+        neg -= coef * preds[:, i + splits]
+        coef <<= len_split
+    pred_delta = pos * signs + neg * (1 - signs)
+    diff = pred_delta - target
+    eq = torch.eq(diff, 0).byte()
+
+    acc = eq.sum() / eq.shape[0]
+    return acc.item()
+
 def MESoft_eval(net, data_iter, device='cpu', val_freq=4):
     # Evaluate training and val accuracy
     net.eval()
     state = None
+    
+    train_acc1_list = []
     train_acc2_list = []
-    val_acc2_list = []
     train_acc10_list = []
+    val_acc1_list = []
+    val_acc2_list = []
     val_acc10_list = []
     pred64 = 0
     pred128 = 0
@@ -233,25 +278,30 @@ def MESoft_eval(net, data_iter, device='cpu', val_freq=4):
         state = tuple([s.detach() for s in list(state)])
 
         # Calculate accuracy
+        acc_1 = exact_block_acc(preds, target, net.splits, net.len_split, device=device)
         acc_2 = MESoft_acc(preds, target, net.splits, net.len_split, device=device)
         acc_10 = MESoft_acc(preds, target, net.splits, net.len_split, num_blocks=10,
                             device=device)
 
         # Check if its for train or val acc
         if (i+1) % val_freq != 0:
+            train_acc1_list.append(acc_1)
             train_acc2_list.append(acc_2)
             train_acc10_list.append(acc_10)
         else:
+            val_acc1_list.append(acc_1)
             val_acc2_list.append(acc_2)
             val_acc10_list.append(acc_10)
 
     # Calculate overall accuracy
+    train_acc1 = torch.tensor(train_acc1_list).mean()
     train_acc2 = torch.tensor(train_acc2_list).mean()
     train_acc10 = torch.tensor(train_acc10_list).mean()
+    val_acc1 = torch.tensor(val_acc1_list).mean()
     val_acc2 = torch.tensor(val_acc2_list).mean()
     val_acc10 = torch.tensor(val_acc10_list).mean()
 
-    return train_acc2, train_acc10, val_acc2, val_acc10
+    return train_acc1, train_acc2, train_acc10, val_acc1, val_acc2, val_acc10
 
 def MESoft_train_eval(net, data_iter, epochs, optimizer, device='cpu', scheduler=None,
                     print_interval=10, val_freq=4, e_start=0, eval_only=False, ev_always=False):
@@ -289,14 +339,15 @@ def MESoft_train_eval(net, data_iter, epochs, optimizer, device='cpu', scheduler
 
             if ev_always:
                 tup = MESoft_eval(net, data_iter, device=device, val_freq=val_freq)
-                train_acc2, train_acc10, val_acc2, val_acc10 = tup
+                train_acc1, train_acc2, train_acc10, val_acc1, val_acc2, val_acc10 = tup
                 val_list.append(val_acc10.item())
 
     if not ev_always:
+        print("Eval start")
         tup = MESoft_eval(net, data_iter, device=device, val_freq=val_freq)
-        train_acc2, train_acc10, val_acc2, val_acc10 = tup
+        train_acc1, train_acc2, train_acc10, val_acc1, val_acc2, val_acc10 = tup
 
-    return loss_list, val_list, train_acc2, train_acc10, val_acc2, val_acc10
+    return loss_list, val_list, train_acc1, train_acc2, train_acc10, val_acc1, val_acc2, val_acc10
 
 def main(argv):
     # Reproducibility
@@ -353,7 +404,10 @@ def main(argv):
     tup = MESoft_train_eval(net, data_iter, epochs, optimizer, device=device, scheduler=scheduler,
                             print_interval=print_in, val_freq=val_freq, e_start = e_start,
                             eval_only=args.e, ev_always=ev_always)
-    loss_list, val_list, acc2_t, acc10_t, acc2_v, acc10_v = tup
+    loss_list, val_list, acc1_t, acc2_t, acc10_t, acc1_v, acc2_v, acc10_v = tup
+
+    print("Train Accuracy:\t{:.6f}".format(acc1_t))
+    print("Val Accuracy:\t{:.6f}".format(acc1_v))
 
     print("Train Accuracy at 2:\t{:.6f}".format(acc2_t))
     print("Val Accuracy at 2:\t{:.6f}".format(acc2_v))
