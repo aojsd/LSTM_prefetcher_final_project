@@ -16,6 +16,7 @@ class EmbeddingLSTM(nn.Module):
         dropout=0,  # probability with which to apply dropout
     ):
         super(EmbeddingLSTM, self).__init__()
+        self.num_pred = num_pred
 
         # The concatenation of these two things will be the input to the LSTM
         self.pc_embed = nn.Embedding(num_pc, embed_dim)
@@ -28,29 +29,21 @@ class EmbeddingLSTM(nn.Module):
             dropout=dropout,
         )
 
-        # Although the paper doesn't mention it, the output from the LSTM needs
-        # to be converted to probabilities over the possible deltas.
+        # Need to be able to map LSTM outputs to the output vocab
         self.fc = nn.Linear(hidden_dim, num_output_delta)
         self.dropout = nn.Dropout(p=dropout)
-        self.num_pred = num_pred
 
     def forward(self, X, lstm_state, target=None):
-        # X is the tuple (pc's, deltas) where:
-        #       pc's and deltas have shape (T,)
-        # target is a tensor of the target deltas, has shape (T,)
-        #       target might be None if we just want to predict
-        # Returns loss, lstm output, and lstm state
-
         pc, delta = X
         pc_embed = self.pc_embed(pc)
         delta_embed = self.delta_embed(delta)
         lstm_in = torch.cat([pc_embed, delta_embed], dim=-1)
 
-        # Unsqueeze a dimension for `batch` (necessary for LSTM input)
+        # Unsqueeze a `batch` dimension (necessary for LSTM input)
         if len(lstm_in.shape) < 3:
             lstm_in = lstm_in.unsqueeze(dim=1)
 
-        # Run the embeddings through the LSTM and get the top K predictions
+        # Run the embeddings through the LSTM and get the top-K predictions
         # (`topk` returns tuple of values and indices, the indices represent
         #  the deltas themselves and the values are their probabilities)
         lstm_out, state = self.lstm(lstm_in, lstm_state)

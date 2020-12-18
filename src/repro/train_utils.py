@@ -11,7 +11,9 @@ def read_data(infile, train_size, val_size, batch_size, val_freq, parse_hex=Fals
         data["pc"] = data["pc"].apply(convert_hex_to_dec)
         data["addr"] = data["addr"].apply(convert_hex_to_dec)
 
-    train_data = data[(data.index // batch_size) % val_freq != (val_freq - 1)]
+    # If val_freq = 4, every 4th batch is used for validation. Everything else
+    # is the training dataset.
+    train_data = data[(data.index // batch_size + 1) % val_freq != 0]
     return data, train_data
 
 
@@ -33,7 +35,7 @@ def train_net(
 
     for e in range(epochs):
         # Certain layers behave differently depending on whether we're training
-        # or testing, so tell the model to run in training mode
+        # or evaluating, so tell the model to run in training mode
         net.train()
         state = None
 
@@ -64,7 +66,7 @@ def train_net(
 
 
 def prob_acc(pred, target, target_vocab, clusters=None):
-    # pred shape: (N, K = 10)
+    # pred shape: (N, K)
     # target: (N, 1)
     num_correct = 0
 
@@ -72,6 +74,9 @@ def prob_acc(pred, target, target_vocab, clusters=None):
         clusters = [None] * len(pred)
 
     for expected, topk, cluster in zip(target, pred, clusters):
+        # Automatically mark prediction as wrong if we're not
+        # training on the expected output delta (be sure to use
+        # correct output vocab for clustering LSTM)
         trainable = (
             expected.item() in target_vocab[cluster].val_to_key
             if isinstance(target_vocab, list)

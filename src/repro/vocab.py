@@ -15,10 +15,10 @@ class Vocab:
         return self.counter
 
     def get_val(self, key):
-        # Return -1 by default to treat pruned out deltas as unknown
-        # Assumption: all the keys remain the same, so we can use
-        # `self.counter` as a dummy value (kind of like [unk] in
-        # neural translation models).
+        # Return `self.counter` by default to treat pruned out deltas 
+        # as unknown. Assumption: all the keys remain the same, so we 
+        # can use `self.counter` as a dummy value (kind of like [unk] 
+        # in neural translation models).
         return self.key_to_val.get(key, self.counter)
 
     def get_key(self, val):
@@ -34,20 +34,13 @@ class Vocab:
 def make_output_vocab(delta_out, num_output_deltas):
     return Vocab(
         delta_out.value_counts()
-        .nlargest(num_output_deltas)  # Limit to 50,000 most common
+        .nlargest(num_output_deltas)
         .keys()
         .tolist()
     )
 
 
 def build_vocabs(data, num_clusters=6, num_output_deltas=50000):
-    """
-    Reads the entire CSV and figures out:
-        - The number of PCs
-        - The input deltas that occur at least 10 times
-        - The 50,000 most frequent and unique deltas
-    """
-    # TODO: do PCs need to be sorted?
     pc_vocab = Vocab(data["pc"].drop_duplicates())
 
     delta_vocab = Vocab(
@@ -58,6 +51,8 @@ def build_vocabs(data, num_clusters=6, num_output_deltas=50000):
         .tolist()
     )
 
+    # We need one output vocab per cluster for clustering LSTM, but only
+    # one overall output vocab for embedding LSTM
     target_vocab = (
         [
             make_output_vocab(

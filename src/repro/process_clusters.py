@@ -20,6 +20,9 @@ def calc_deltas(input_data):
     deltas = (input_data["addr"].shift(-1)) - input_data["addr"]
     output_data["delta_out"] = deltas
     output_data["delta_in"] = deltas.shift(1)
+
+    # First row does not have an input delta and last row does
+    # not have an output delta
     output_data = output_data.dropna()
 
     output_data["delta_in"] = output_data["delta_in"].astype("long")
@@ -36,11 +39,15 @@ def process_data(data, kmeans, num_clusters):
         for cluster_id in range(num_clusters)
     ]
 
+    # This is very important: we rearrange the cache misses for the clusters
+    # back into the original sequence in which the misses occurred. This is
+    # because the prefetcher does not get to choose the order in which misses
+    # occur, so we must train on the original order. This rearrangement is
+    # done using the `id` column.
     return pd.concat(cluster_dfs).sort_values(by=["id"]).drop(["id"], axis=1)
 
 
 def main(args):
-    # Only fit KMeans on the training data
     data, train_data = read_data(
         args.infile,
         args.train_size,
@@ -50,8 +57,8 @@ def main(args):
         parse_hex=True,
     )
 
-    # Only fit the KMeans estimator on the training dataset, but assign clusters
-    # to ALL data points
+    # Only fit KMeans estimator on the training data, but assign clusters to 
+    # *all* data points
     num_clusters = 6
     kmeans = fit_kmeans(train_data, num_clusters)
     clustered = process_data(data, kmeans, num_clusters)

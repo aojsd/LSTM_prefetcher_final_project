@@ -16,8 +16,11 @@ class ClusteringLSTM(nn.Module):
         dropout=0,  # probability with which to apply dropout
     ):
         super(ClusteringLSTM, self).__init__()
+        self.num_pred = num_pred
 
         # The concatenation of these two things will be the input to the LSTM
+        # NOTE: paper technically feeds these as real-valued inputs, but we
+        # did not get a chance to experiment with that 🙁
         self.pc_embed = nn.Embedding(num_pc, embed_dim)
         self.delta_embed = nn.Embedding(num_input_delta, embed_dim)
 
@@ -28,6 +31,7 @@ class ClusteringLSTM(nn.Module):
             dropout=dropout,
         )
 
+        # Each cluster gets its own output layer
         self.cluster_networks = nn.ModuleList(
             [
                 nn.Sequential(
@@ -38,17 +42,7 @@ class ClusteringLSTM(nn.Module):
             ]
         )
 
-        # Although the paper doesn't mention it, the output from the LSTM needs
-        # to be converted to probabilities over the possible deltas.
-        self.num_pred = num_pred
-
     def forward(self, X, lstm_state, target=None):
-        # X is the tuple (pc's, deltas) where:
-        #       pc's and deltas have shape (T,)
-        # target is a tensor of the target deltas, has shape (T,)
-        #       target might be None if we just want to predict
-        # Returns loss, lstm output, and lstm state
-
         pc, delta, clusters = X
         batch_size = pc.shape[0]
 
@@ -56,44 +50,53 @@ class ClusteringLSTM(nn.Module):
         delta_embed = self.delta_embed(delta)
         lstm_in = torch.cat([pc_embed, delta_embed], dim=-1)
 
-        # Unsqueeze a dimension for `batch` (necessary for LSTM input)
+        # Unsqueeze a `batch` dimension (necessary for LSTM input)
         if len(lstm_in.shape) < 3:
             lstm_in = lstm_in.unsqueeze(dim=1)
 
-        # Run the embeddings through the LSTM and get the top K predictions
-        # (`topk` returns tuple of values and indices, the indices represent
-        #  the deltas themselves and the values are their probabilities)
+        # Run the embeddings through the LSTM and get the top-K predictions
         lstm_out, state = self.lstm(lstm_in, lstm_state)
 
-        # Create a mapping that tells us which input indices correspond to the 
-        # inputs of each cluster.
+        # Create a mapping that says which inputs belong to each cluster
+        # The list at index `i` is for cluster `i`
         indices = [[] for _ in range(len(self.cluster_networks))]
 
         for orig, cluster in enumerate(clusters):
             indices[cluster.item()].append(orig)
 
         loss = 0
-        outputs = torch.zeros(batch_size, self.num_pred, dtype=torch.long, device=pc.device)
+        outputs = torch.zeros(
+            batch_size, self.num_pred, dtype=torch.long, device=pc.device
+        )
 
         # Pick out the inputs corresponding to each cluster, and run *all* of
-        # those inputs through the task-specific network at once.
+        # those inputs through the cluster's respective output layer at once
         for cluster, network in enumerate(self.cluster_networks):
             orig_indices = indices[cluster]
 
             # If there are no inputs corresponding to this cluster in the
-            # batch, just skip it to avoid errors computing loss.
+            # batch, just skip it to avoid errors computing loss
             if len(orig_indices) == 0:
                 continue
 
             inputs = lstm_out[orig_indices]
             output = network(inputs)
+
+            # Remove the dummy `batch` dimension since it's no longer needed
             probabilities = F.log_softmax(output, dim=-1).squeeze(dim=1)
 
+            # Same forward pass impl is used for prediction as well, just
+            # check if there are any targets to compute loss against
             if target is not None:
                 # Cross entropy loss (log softmax part was already performed)
                 loss += F.nll_loss(probabilities, target[orig_indices])
 
+            # `topk` returns tuple of values and indices, the indices represent
+            # the deltas themselves and the values are their probabilities
             _, preds = torch.topk(probabilities, self.num_pred, sorted=False)
+
+            # Map the outputs for this cluster back into their positions in the
+            # original input sequence
             outputs[orig_indices] = preds
 
         return loss, outputs, state
